@@ -1,0 +1,156 @@
+"""API-level tests: revenue math (pure), dashboard endpoints (Postgres-backed),
+and the ingest trigger (broker seam stubbed — the API only produces tasks).
+
+Endpoint tests call the route functions directly and must commit the seeded
+session first — each endpoint opens its own SessionLocal session.
+"""
+from datetime import timedelta
+
+import pytest
+
+import app.api as api_mod
+from app.api import revenue_chain
+from app.db import repo
+
+HOUR = timedelta(hours=1)
+
+
+def test_chain_applies_losses_then_uncertainty():
+    chain = revenue_chain(
+        1_000_000.0,
+        availability_loss=0.03,
+        electrical_loss=0.02,
+        wake_loss=0.05,
+        uncertainty=0.10,
+    )
+    expected_net = 1_000_000.0 * 0.97 * 0.98 * 0.95
+    assert chain["net_kwh"] == pytest.approx(expected_net)
+    assert chain["p50_kwh"] == pytest.approx(expected_net)
+    assert chain["p90_kwh"] == pytest.approx(expected_net * (1 - 1.282 * 0.10))
+
+
+def test_zero_losses_keep_gross():
+    chain = revenue_chain(500.0, availability_loss=0.0, electrical_loss=0.0,
+                          wake_loss=0.0, uncertainty=0.0)
+    assert chain["p50_kwh"] == pytest.approx(500.0)
+    assert chain["p90_kwh"] == pytest.approx(500.0)
+
+
+def test_p90_never_exceeds_p50():
+    chain = revenue_chain(9_000_000.0, availability_loss=0.1,
+                          electrical_loss=0.1, wake_loss=0.1, uncertainty=0.15)
+    assert chain["p90_kwh"] < chain["p50_kwh"]
+
+
+class StubTask:
+    """Stands in for a taskiq task; records kiq() sends on the broker seam."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.sent = 0
+
+    async def kiq(self) -> None:
+        self.sent += 1
+
+
+async def test_queue_ingest_defaults_to_sync(monkeypatch):
+    sync_task, backfill_task = StubTask("periodic_sync"), StubTask("run_backfill")
+    monkeypatch.setattr(api_mod, "periodic_sync", sync_task)
+    monkeypatch.setattr(api_mod, "run_backfill", backfill_task)
+
+    assert await api_mod.queue_ingest() == {"queued": True}
+    assert sync_task.sent == 1
+    assert backfill_task.sent == 0
+
+
+async def test_queue_ingest_backfill_mode(monkeypatch):
+    sync_task, backfill_task = StubTask("periodic_sync"), StubTask("run_backfill")
+    monkeypatch.setattr(api_mod, "periodic_sync", sync_task)
+    monkeypatch.setattr(api_mod, "run_backfill", backfill_task)
+
+    assert await api_mod.queue_ingest("backfill") == {"queued": True}
+    assert backfill_task.sent == 1
+    assert sync_task.sent == 0
+
+
+async def test_daily_endpoint_qc_columns(db, clean, reference, measurement_row, hour):
+    assert await api_mod.daily(30) == []      # wiped DB never crashes the endpoint
+
+    await repo.upsert_measurements(db, [
+        measurement_row(hour, 8.0, quality="ok"),
+        measurement_row(hour + HOUR, -0.5, quality="suspect"),
+    ])
+    await db.commit()
+    daily = await api_mod.daily(30)
+    today = next(p for p in daily if p["day"] == hour.date())
+    assert today["energy_kwh"] is not None
+    assert today["suspect_hours"] == 1
+    assert today["missing_hours"] == 0
+
+
+async def test_daily_endpoint_caps_days(db, clean, reference, measurement_row):
+    # clamped to a 1-day window; on a wiped DB that is always empty
+    assert await api_mod.daily(0) == []
+    assert await api_mod.daily(-5) == []
+
+
+async def test_metrics_endpoint_chain_and_staleness(
+    db, clean, reference, measurement_row, hour
+):
+    await repo.upsert_measurements(db, [measurement_row(hour, 10.0)])
+    await db.commit()
+    payload = await api_mod.metrics()
+
+    # α = 0.2 → hub speed 10·(140/100)^0.2 ≈ 10.6964 → curve slope 180 kW/(m/s)
+    hub = 10.0 * (140.0 / 100.0) ** 0.2
+    expected_gross = 1800.0 + (3600.0 - 1800.0) * (hub - 10.0) / 10.0
+    chain = revenue_chain(
+        expected_gross,
+        availability_loss=0.03, electrical_loss=0.02, wake_loss=0.05, uncertainty=0.1,
+    )
+    assert payload["aep"]["gross_kwh"] == pytest.approx(expected_gross)
+    assert payload["aep"]["p90_kwh"] == pytest.approx(chain["p90_kwh"])
+    assert payload["site"]["shear_exponent"] == 0.2
+    assert payload["turbine"]["hub_height_m"] == 140.0
+    assert payload["mast"]["measurement_height_m"] == 100.0
+    assert payload["staleness"]["last_run"] is None
+    assert payload["coverage"]["absent_hours"] == 0
+
+
+async def test_wind_endpoint_series_and_rose(db, clean, reference, measurement_row, hour):
+    await repo.upsert_measurements(db, [
+        measurement_row(hour, 5.0, wind_dir=10),
+        measurement_row(hour + HOUR, 6.0, wind_dir=200),
+        measurement_row(hour + 2 * HOUR, None, quality="missing"),  # not in series
+    ])
+    await db.commit()
+    payload = await api_mod.wind(2)
+    assert payload["hours"] == 2
+    assert [p["wind_speed_ms"] for p in payload["series"]] == [5.0, 6.0]
+    assert [p["wind_dir_deg"] for p in payload["series"]] == [10, 200]
+    assert len(payload["rose"]) == 16               # all sectors, never filtered
+    north = next(s for s in payload["rose"] if s["direction"] == "N")
+    assert north["frequency"] == 1
+    assert north["mean_speed_ms"] == pytest.approx(5.0)
+
+
+async def test_runs_endpoint_newest_first_and_limit_cap(db, clean, hour):
+    for i in range(3):
+        await repo.record_ingest_run(
+            db, started_at=hour, finished_at=hour, status="ok" if i else "error",
+            pages=i, inserted=i, updated=0,
+        )
+    await db.commit()
+
+    runs = await api_mod.ingest_runs(2)
+    assert [r["pages"] for r in runs] == [2, 1]
+    assert runs[0]["status"] == "ok"
+
+    # 50 further runs → limit={100} is clamped to 50 server-side
+    for _ in range(50):
+        await repo.record_ingest_run(
+            db, started_at=hour, finished_at=hour, status="ok", pages=0,
+            inserted=0, updated=0,
+        )
+    await db.commit()
+    assert len(await api_mod.ingest_runs(100)) == 50

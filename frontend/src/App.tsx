@@ -1,73 +1,110 @@
-import { useEffect, useState } from "react";
+import { useState, type ReactNode } from "react";
 
-interface HealthResponse {
-  status: string;
-  service: string;
-  version: string;
-}
+import logoUrl from "./assets/windiq-logo.png";
 
-async function fetchHealth(): Promise<HealthResponse> {
-  const response = await fetch("/api/health");
-  if (!response.ok) {
-    throw new Error(`Health check failed (HTTP ${response.status})`);
-  }
-  return (await response.json()) as HealthResponse;
-}
-
-type LoadState = "loading" | "ok" | "error";
+import { Header } from "./components/Header";
+import { DailyChart } from "./components/DailyChart";
+import { WindPanel } from "./components/WindPanel";
+import { DataStatus } from "./components/DataStatus";
+import { IngestHistory } from "./components/IngestHistory";
+import { Methodology } from "./components/Methodology";
+import { useDashboard } from "./useDashboard";
 
 function App() {
-  const [state, setState] = useState<LoadState>("loading");
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchHealth()
-      .then((data) => {
-        setHealth(data);
-        setState("ok");
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Unknown error");
-        setState("error");
-      });
-  }, []);
+  const [days, setDays] = useState(90);
+  const dashboard = useDashboard(days);
 
   return (
     <main>
-      <h1>WindIQ</h1>
+      <header className="masthead">
+        <img src={logoUrl} alt="WindIQ" />
+        <button onClick={dashboard.refreshAll}>
+          {dashboard.loading ? "Aktualisiere…" : "Aktualisieren"}
+        </button>
+      </header>
 
-      {state === "loading" && <p>Checking backend…</p>}
+      <section>
+        <PanelState panel={dashboard.metrics}>
+          {(metrics) => <Header metrics={metrics} />}
+        </PanelState>
+      </section>
 
-      {state === "ok" && health && (
-        <div>
-          <h2>API status</h2>
-          <dl>
-            <dt>status</dt>
-            <dd>
-              <code>{health.status}</code>
-            </dd>
-            <dt>service</dt>
-            <dd>
-              <code>{health.service}</code>
-            </dd>
-            <dt>version</dt>
-            <dd>
-              <code>{health.version}</code>
-            </dd>
-          </dl>
-        </div>
-      )}
+      <section className="panel">
+        <PanelState panel={dashboard.daily}>
+          {(daily) => (
+            <DailyChart daily={daily} days={days} onRangeChange={setDays} />
+          )}
+        </PanelState>
+      </section>
 
-      {state === "error" && <p>Backend unreachable — {error}</p>}
+      <section className="panel">
+        <h2>Wind</h2>
+        <PanelState panel={dashboard.wind}>{(wind) => <WindPanel wind={wind} />}</PanelState>
+      </section>
+
+      <section className="panel">
+        <h2>Datenstatus</h2>
+        <PanelState panel={dashboard.runs}>
+          {(runs) => (
+            <PanelState panel={dashboard.metrics}>
+              {(metrics) => <DataStatus metrics={metrics} runs={runs} />}
+            </PanelState>
+          )}
+        </PanelState>
+      </section>
+
+      <section className="panel">
+        <h2>Ingest-Verlauf</h2>
+        <PanelState panel={dashboard.runs}>{(runs) => <IngestHistory runs={runs} />}</PanelState>
+      </section>
+
+      <section className="panel">
+        <h2>Berechnungsmethode</h2>
+        <PanelState panel={dashboard.metrics}>
+          {(metrics) => <Methodology metrics={metrics} />}
+        </PanelState>
+      </section>
 
       <footer>
-        UI served by nginx · API at <code>/api</code> · docs at{" "}
+        API unter <code>/api</code> · Doku unter{" "}
         <a href="/api/docs" target="_blank" rel="noreferrer">
           /api/docs
         </a>
+        · Werte aktualisieren sich alle 60 s
       </footer>
     </main>
+  );
+}
+
+/** Per-panel loading/error states: stale data stays visible after a failed
+ * refresh, an empty panel shows failed/Retry (plan phase 4). */
+function PanelState<T>({
+  panel,
+  children,
+}: {
+  panel: { data: T | null; error: string | null; loading: boolean; refresh: () => void };
+  children: (data: T) => ReactNode;
+}) {
+  if (panel.data == null) {
+    if (panel.error) {
+      return (
+        <p className="panel-empty">
+          Laden fehlgeschlagen — {panel.error}{" "}
+          <button onClick={panel.refresh}>Erneut versuchen</button>
+        </p>
+      );
+    }
+    return <p className="panel-empty">{panel.loading ? "Laden…" : "Keine Daten."}</p>;
+  }
+  return (
+    <div className={panel.error ? "data stale-refresh" : "data"}>
+      {panel.error && (
+        <p className="error-note">
+          Letzte Aktualisierung fehlgeschlagen — es werden die letzten Daten angezeigt.
+        </p>
+      )}
+      {children(panel.data)}
+    </div>
   );
 }
 

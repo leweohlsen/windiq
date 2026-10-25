@@ -24,8 +24,11 @@ Formeln (Case Study): `v_Nabe = v_Mess · (h_Nabe / h_Mess)^α` ·
 AEP netto = AEP brutto × (1 − Verfügbarkeit) × (1 − elektrisch) × (1 − Abschattung) ·
 P90 = P50 × (1 − 1,282 × U). Suspect/missing-Stunden zählen **nicht** zur Energie.
 
-Status: Persistenz-Layer (Phase 1) und Ingest-Worker (Phase 2) vollständig —
-Voll-Backfill in ~8 s, idempotent, QC/Journal live. Phasenplan und Abnahmekriterien:
+Status: Persistenz-Layer (Phase 1), Ingest-Worker (Phase 2) und das Dashboard
+(API Phase 3 + SPA Phase 4) vollständig — Voll-Backfill in ~8 s, idempotent,
+QC/Journal live; Dashboard mit P50/P90-Karten, Tageschart (Recharts, QC-Färbung,
+Range-Switcher), Windrose + 48-h-Windlinie, Datenstatus („Sync now“), Ingest-
+Historie und Methodik. Phasenplan und Abnahmekriterien:
 [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Quickstart
@@ -46,22 +49,27 @@ Datenbankzugriff:
 docker compose exec db psql -U windiq
 ```
 
-## Entwicklung (Hot Reload, ohne Docker)
+## Entwicklung (Hot Reload, alles in Docker)
 
 ```sh
-# Terminal 1 — DB + API auf http://localhost:8000
-docker compose up -d db
-cd backend && uv sync && uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
-
-# Terminal 2 — UI auf http://localhost:5173
-cd frontend && npm install && npm run dev
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-Vite leitet `/api/*` an das Backend weiter, wie in Produktion.
+Ein Befehl, kompletter Stack aus dem Quellcode — DB, Migrationen, API, Ingest-Worker,
+Scheduler und Vite mit Hot Reload (`--build` nur beim ersten Start bzw. nach
+Abhängigkeitsänderungen).
+
+- **UI:** http://localhost:5173 · **API per Vite-Proxy:** http://localhost:5173/api/docs
+- Das Backend ist wie in Produktion nicht direkt erreichbar; nginx entfällt.
+- Code-Änderungen werden per Bind-Mount direkt übernommen — uvicorn `--reload`
+  im Backend-Container, Vite-HMR im Frontend-Container; kein Rebuild beim Speichern.
+- `Ctrl-C` stoppt alle Services, `docker compose down` räumt zusätzlich auf —
+  das Volume `windiq-pgdata` bleibt erhalten.
+- Logs eines einzelnen Services: `docker compose -f ... logs -f worker`
 
 Env-Dateien: `backend/.env` (siehe `backend/.env.example`) mit `WIQ_CLIENT_ID`,
-`WIQ_CLIENT_SECRET`, `WIQ_API_BASE_URL` und `DATABASE_URL`.
+`WIQ_CLIENT_SECRET`, `WIQ_API_BASE_URL` und `DATABASE_URL` — die Compose-Services
+lesen sie über `docker-compose.dev.yml`; `DATABASE_URL` kommt trotzdem aus Compose.
 
 ## CI/CD (GitHub Actions → Coolify)
 
@@ -78,8 +86,11 @@ Env-Dateien: `backend/.env` (siehe `backend/.env.example`) mit `WIQ_CLIENT_ID`,
 ```
 frontend/                     React + TS + Vite · multi-stage Dockerfile → nginx
   nginx.conf                    gzip · Asset-Caching · /api-Proxy · SPA-Fallback
+docker-compose.dev.yml        Dev-Overlay: Bind-Mounts + Hot Reload für
+                              backend/worker/scheduler, Vite an Stelle von nginx
 backend/
-  app/main.py                   FastAPI-App, /api/health, /api docs
+  app/main.py                   FastAPI-App: /api/health, /api/docs; lifespan startet den taskiq-Broker
+  app/api.py                    Reading-API (Phase 3): metrics, daily, wind, runs + ingest/run-Trigger
   app/windiq/                   Client-Fassade für die WindIQ-API (auth, retry)
   app/db/                       SQLAlchemy-async-Modelle, Repo, Alembic
   app/ingest/                   Ingest-Worker: Backfill, Taktlauf, QC

@@ -1,0 +1,55 @@
+# Dev overlay for docker-compose.yml — full stack from source with hot reload.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Sources are bind-mounted into the containers; /app/.venv and /app/node_modules
+# live on anonymous volumes so the mounts don't shadow the installed deps.
+# No nginx: the API is only reachable via the Vite proxy on :5173, like the
+# /api/* path in prod. frontend publishes :5173 (vite) instead of :8080 (nginx).
+#
+# Backend/worker/scheduler read WIQ_* credentials from backend/.env when it
+# exists; the compose `environment` (DATABASE_URL) still wins over env_file.
+#
+# Ctrl-C stops everything (containers, no orphans); `down` keeps windiq-pgdata.
+
+services:
+  backend:
+    image: windiq-backend-dev
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    env_file:
+      - path: backend/.env
+        required: false
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+
+  worker:
+    image: windiq-backend-dev
+    env_file:
+      - path: backend/.env
+        required: false
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+
+  scheduler:
+    image: windiq-backend-dev
+    env_file:
+      - path: backend/.env
+        required: false
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+
+  frontend:
+    build:
+      context: ./frontend
+      target: build # dev: this stage has node_modules incl. vite (runtime has nginx only)
+    image: windiq-frontend-dev
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      BACKEND_URL: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports: !override ["127.0.0.1:5173:5173"]

@@ -1,16 +1,30 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api import router as api_router
 from app.db.engine import ping as db_ping
 from app.db.engine import SessionLocal
 from app.db.repo import ingest_health
+from app.worker import broker
 
 load_dotenv()
 
 VERSION = "0.1.0"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """The API only produces tasks: connect the broker, no listening loop."""
+    await broker.startup()
+    try:
+        yield
+    finally:
+        await broker.shutdown()
+
 
 app = FastAPI(
     title="WindIQ API",
@@ -18,7 +32,10 @@ app = FastAPI(
     # Docs live under /api so nginx proxies them straight through
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
+
+app.include_router(api_router)
 
 
 @app.get("/api/health")

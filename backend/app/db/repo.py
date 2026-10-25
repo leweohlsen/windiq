@@ -125,39 +125,144 @@ async def aep_trailing_12m(session: AsyncSession) -> dict[str, Any]:
 
 
 async def daily_series(session: AsyncSession, days: int = 90) -> list[dict]:
+    """Per-day energy + QC counts, so the SPA can color bars without a 2nd call.
+
+    `suspect_hours`/`missing_hours` count defective rows of that day (missing
+    = sentinel rows and malformed rows combined). Days without any ok hours
+    appear with NULL energy instead of dropping out — the SPA draws them as a
+    gap. `mean_wind_ms` is the ok-hour mean, weighted by per-mast day rows.
+    """
     result = await session.execute(text("""
-        SELECT day, energy_kwh, hours, mean_wind_ms, max_wind_ms
-          FROM daily_energy
-         WHERE day >= (now() - make_interval(days => :days))::date
+        WITH qc AS (
+            SELECT (timestamp AT TIME ZONE 'UTC')::date AS day,
+                   COUNT(*) FILTER (WHERE quality = 'suspect')                 AS suspect_hours,
+                   COUNT(*) FILTER (WHERE quality IN ('missing', 'malformed')) AS missing_hours
+              FROM measurements
+             WHERE timestamp >= now() - make_interval(days => :days)
+             GROUP BY 1
+        ), ok AS (
+            SELECT day,
+                   SUM(energy_kwh) AS energy_kwh,
+                   SUM(hours)      AS hours,
+                   CASE WHEN SUM(hours) > 0
+                        THEN SUM(mean_wind_ms * hours) / SUM(hours) END AS mean_wind_ms,
+                   MAX(max_wind_ms) AS max_wind_ms
+              FROM daily_energy
+             WHERE day >= (now() - make_interval(days => :days))::date
+             GROUP BY 1
+        )
+        SELECT o.day, o.energy_kwh, o.hours, o.mean_wind_ms, o.max_wind_ms,
+               COALESCE(q.suspect_hours, 0) AS suspect_hours,
+               COALESCE(q.missing_hours, 0) AS missing_hours
+          FROM ok o
+          LEFT JOIN qc q USING (day)
+        UNION ALL
+        SELECT q.day, NULL, NULL, NULL, NULL, q.suspect_hours, q.missing_hours
+          FROM qc q
+         WHERE NOT EXISTS (SELECT 1 FROM ok o WHERE o.day = q.day)
          ORDER BY day
     """), {"days": days})
     return [dict(row) for row in result.mappings().all()]
 
 
 async def coverage(session: AsyncSession) -> dict[str, Any]:
-    """Measurement range, expected hours, present rows, and QC splits."""
+    """Measurement range, expected/absent hours, QC row splits, max gap.
+
+    Hour classes are counted by stored quality; `absent_hours` are the hours
+    of the covered span with no row at all; `max_gap_hours` is the largest
+    consecutive hole across the whole stored window.
+    """
     result = await session.execute(text("""
         SELECT MIN(timestamp)  AS from_ts,
                MAX(timestamp)  AS to_ts,
                COUNT(*)        AS total_hours,
-               COUNT(*) FILTER (WHERE quality = 'ok')                AS usable_hours,
-               COUNT(*) FILTER (WHERE quality = 'suspect')           AS suspect_hours,
-               COUNT(*) FILTER (WHERE quality IN ('missing','malformed')) AS bad_hours,
+               COUNT(*) FILTER (WHERE quality = 'ok')        AS usable_hours,
+               COUNT(*) FILTER (WHERE quality = 'suspect')   AS suspect_hours,
+               COUNT(*) FILTER (WHERE quality = 'missing')   AS missing_hours,
+               COUNT(*) FILTER (WHERE quality = 'malformed') AS malformed_hours,
                CASE WHEN MIN(timestamp) IS NULL THEN 0
                     ELSE EXTRACT(EPOCH FROM MAX(timestamp) - MIN(timestamp)) / 3600 + 1
-               END                                                    AS expected_hours
+               END                                            AS expected_hours,
+               COALESCE((SELECT MAX(gap)
+                           FROM (SELECT EXTRACT(EPOCH FROM timestamp
+                                                 - LAG(timestamp) OVER (ORDER BY timestamp))
+                                        / 3600.0 - 1 AS gap
+                                   FROM measurements) AS gaps), 0)::int
+                                                              AS max_gap_hours
           FROM measurements
     """))
     row = dict(result.mappings().one())
     row["expected_hours"] = int(row["expected_hours"])
-    row["missing_hours"] = row["expected_hours"] - row["total_hours"]
+    row["absent_hours"] = row["expected_hours"] - row["total_hours"]
     return row
+
+
+async def wind_series(session: AsyncSession, hours: int = 48) -> list[dict]:
+    """Trailing hourly speed + direction of ok rows, oldest first."""
+    result = await session.execute(text("""
+        SELECT timestamp, wind_speed_ms, wind_dir_deg
+          FROM measurements
+         WHERE quality = 'ok' AND wind_speed_ms IS NOT NULL
+         ORDER BY timestamp DESC
+         LIMIT :hours
+    """), {"hours": hours})
+    return [dict(row) for row in reversed(result.mappings().all())]
+
+
+# 16 compass sectors spanning 22.5° each, centered on the named direction
+COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+           "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
+
+ROSE_WINDOW_DAYS = 30
+
+
+async def wind_rose(session: AsyncSession, days: int = ROSE_WINDOW_DAYS) -> list[dict]:
+    """16-sector frequency + mean-speed histogram of the last `days` ok hours.
+
+    Sector membership is `ROUND(deg / 22.5) % 16`, i.e. sector i = [(i−0.5)·22.5°,
+    (i+0.5)·22.5°) and 360° wraps back to N. All 16 sectors are always present
+    (0 frequency when empty) so the SPA can draw a closed rose without
+    re-indexing.
+    """
+    result = await session.execute(text("""
+        SELECT ROUND((wind_dir_deg % 360) / 22.5)::int % 16 AS sector,
+               COUNT(*)            AS frequency,
+               AVG(wind_speed_ms)  AS mean_speed_ms
+          FROM measurements
+         WHERE quality = 'ok'
+           AND wind_speed_ms IS NOT NULL
+           AND timestamp >= now() - make_interval(days => :days)
+         GROUP BY 1
+    """), {"days": days})
+    counted = {r["sector"]: dict(r) for r in result.mappings().all()}
+    return [
+        {
+            "direction": COMPASS[i],
+            "degrees": i * 360 // len(COMPASS),
+            "frequency": counted[i]["frequency"] if i in counted else 0,
+            "mean_speed_ms": counted[i]["mean_speed_ms"] if i in counted else None,
+        }
+        for i in range(len(COMPASS))
+    ]
+
+
+async def ingest_runs_recent(session: AsyncSession, limit: int = 10) -> list[dict]:
+    """Last N ingest runs, newest first (dashboard history table)."""
+    result = await session.execute(text("""
+        SELECT id, started_at, finished_at, status, pages, inserted, updated,
+               frame_from, frame_to, qc_missing, qc_suspect, qc_malformed,
+               max_gap_hours, detail
+          FROM ingest_runs ORDER BY id DESC LIMIT :limit
+    """), {"limit": limit})
+    return [dict(row) for row in result.mappings().all()]
 
 
 async def ingest_health(session: AsyncSession) -> dict[str, Any]:
     """Last ingest run + measurement staleness, feeding /api/health."""
     last_run = (await session.execute(text("""
-        SELECT id, started_at, finished_at, status, pages, inserted, updated, detail
+        SELECT id, started_at, finished_at, status, pages, inserted, updated,
+               frame_from, frame_to, qc_missing, qc_suspect, qc_malformed,
+               max_gap_hours, detail
           FROM ingest_runs ORDER BY id DESC LIMIT 1
     """))).mappings().first()
     staleness = (await session.execute(text("""

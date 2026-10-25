@@ -1,11 +1,11 @@
 """Integration tests for the persistence layer (needs a reachable Postgres).
 
 The database must have the schema applied (`alembic upgrade head`); CI and
-`docker compose up db` both provide that. Tests seed their own reference rows
-(TEST-*) and clean up after themselves.
+`docker compose up db` both provide that. Shared fixtures (db/clean/reference/
+measurement_row) come from conftest; tests seed their own TEST-* rows here.
 """
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pytest
 from alembic import command
@@ -13,86 +13,9 @@ from alembic.config import Config
 from sqlalchemy import text
 
 from app.db import repo
-from app.db.engine import SessionLocal, ping as db_ping
+from app.db.engine import SessionLocal
 
-
-def _hour() -> datetime:
-    return NOW.replace(minute=0, second=0, microsecond=0)
-
-
-NOW = datetime.now(timezone.utc)
-
-
-@pytest.fixture
-async def db():
-    try:
-        reachable = await db_ping()
-    except Exception:
-        reachable = False
-    if not reachable:
-        pytest.skip("Postgres unreachable — run `docker compose up -d db`")
-    async with SessionLocal() as session:
-        yield session
-
-
-async def _wipe(db) -> None:
-    await db.execute(text("DELETE FROM measurements"))
-    await db.execute(text("DELETE FROM ingest_runs"))
-    await db.execute(text("DELETE FROM site"))
-    await db.execute(text("DELETE FROM power_curve_points"))
-    await db.execute(text("DELETE FROM turbine"))
-    await db.execute(text("DELETE FROM mast"))
-    await db.commit()
-
-
-@pytest.fixture(autouse=True)
-async def clean(db):
-    await _wipe(db)
-    yield
-    await _wipe(db)
-
-
-@pytest.fixture
-async def reference(db):
-    await repo.upsert_mast(db, {
-        "id": "TEST-M", "name": "Test mast", "latitude": 51.9,
-        "longitude": 14.0, "measurement_height_m": 100.0,
-        "operator": "Test ops", "commissioned_at": NOW.date(),
-    })
-    await repo.upsert_turbine(db, {
-        "id": "TEST-T", "name": "Test turbine", "rated_power_kw": 3600.0,
-        "hub_height_m": 140.0, "rotor_diameter_m": 136.0,
-        "cut_in_wind_speed_ms": 3.0, "cut_out_wind_speed_ms": 25.0,
-        "version": 1, "updated_at": NOW,
-    }, power_curve=[(0.0, 0.0), (10.0, 1800.0), (20.0, 3600.0)])
-    await repo.upsert_site(db, {
-        "id": "TEST-S", "name": "Test site", "mast_id": "TEST-M",
-        "shear_exponent": 0.2, "availability_loss": 0.03,
-        "electrical_loss": 0.02, "wake_loss": 0.05, "uncertainty": 0.1,
-        "version": 1, "updated_at": NOW,
-    })
-
-
-def _row(ts: datetime, wind: str | float | None, unit: str = "m/s",
-         quality: str = "ok", version: int = 1,
-         updated_at: datetime | None = None, wind_dir: int = 180) -> dict:
-    wind_speed_ms = None
-    if isinstance(wind, float):
-        wind_speed_ms = wind
-    if unit == "km/h" and wind_speed_ms is not None:
-        wind_speed_ms = wind_speed_ms / 3.6
-    return {
-        "mast_id": "TEST-M",
-        "timestamp": ts,
-        "timestamp_raw": ts.isoformat(),
-        "wind_speed_ms": wind_speed_ms,
-        "unit": unit,
-        "wind_speed_raw": str(wind),
-        "wind_dir_deg": wind_dir,
-        "quality": quality,
-        "version": version,
-        "updated_at": updated_at or ts,
-    }
+HOUR_LATER = timedelta(hours=1)
 
 
 async def stored_value(db, ts: datetime) -> tuple:
@@ -102,68 +25,77 @@ async def stored_value(db, ts: datetime) -> tuple:
     )).one()
 
 
-async def test_upsert_precedence(db, reference):
-    t0 = _hour()
+async def test_upsert_precedence(db, clean, reference, measurement_row, hour):
+    t0 = hour
     assert await repo.upsert_measurements(
-        db, [_row(t0, 7.5, version=1, updated_at=t0 + HOUR_LATER)]
+        db, [measurement_row(t0, 7.5, version=1, updated_at=t0 + HOUR_LATER)]
     ) == (1, 0)
 
     # same key with an older updated_at must never overwrite (idempotent replay)
     assert await repo.upsert_measurements(
-        db, [_row(t0, 1.0, version=0, updated_at=t0 + HOUR_LATER - timedelta(minutes=1))]
+        db, [measurement_row(
+            t0, 1.0, version=0, updated_at=t0 + HOUR_LATER - timedelta(minutes=1)
+        )]
     ) == (0, 0)
     wind_speed_ms, version = await stored_value(db, t0)
     assert (wind_speed_ms, version) == (7.5, 1)
 
     # a newer revision wins
     assert await repo.upsert_measurements(
-        db, [_row(t0, 9.0, version=2, updated_at=t0 + HOUR_LATER + timedelta(minutes=1))]
+        db, [measurement_row(
+            t0, 9.0, version=2, updated_at=t0 + HOUR_LATER + timedelta(minutes=1)
+        )]
     ) == (0, 1)
     wind_speed_ms, version = await stored_value(db, t0)
     assert (wind_speed_ms, version) == (9.0, 2)
 
     # exact replays change nothing
     assert await repo.upsert_measurements(
-        db, [_row(t0, 9.0, version=2, updated_at=t0 + HOUR_LATER + timedelta(minutes=1))]
+        db, [measurement_row(
+            t0, 9.0, version=2, updated_at=t0 + HOUR_LATER + timedelta(minutes=1)
+        )]
     ) == (0, 0)
 
 
-HOUR_LATER = timedelta(hours=1)
-
-
-async def test_upsert_batch_counts_and_persistence(db, reference):
-    t0 = _hour()
-    rows = [_row(t0, 5.0), _row(t0 + HOUR_LATER, 6.0), _row(t0 + 2 * HOUR_LATER, 7.0)]
+async def test_upsert_batch_counts_and_persistence(
+    db, clean, reference, measurement_row, hour
+):
+    t0 = hour
+    rows = [
+        measurement_row(t0, 5.0),
+        measurement_row(t0 + HOUR_LATER, 6.0),
+        measurement_row(t0 + 2 * HOUR_LATER, 7.0),
+    ]
     assert await repo.upsert_measurements(db, rows) == (3, 0)
 
     # one existing hour revised, one new hour, one unchanged hour
-    rows[0] = _row(t0, 5.5, version=2, updated_at=t0 + timedelta(minutes=30))
-    rows.append(_row(t0 + 3 * HOUR_LATER, 8.0))
+    rows[0] = measurement_row(t0, 5.5, version=2, updated_at=t0 + timedelta(minutes=30))
+    rows.append(measurement_row(t0 + 3 * HOUR_LATER, 8.0))
     assert await repo.upsert_measurements(db, rows) == (1, 1)
     wind_speed_ms, _ = await stored_value(db, t0)
     assert wind_speed_ms == 5.5
 
 
-async def test_upsert_dedupes_within_batch(db, reference):
-    t0 = _hour()
+async def test_upsert_dedupes_within_batch(db, clean, reference, measurement_row, hour):
+    t0 = hour
     # the API reports some UTC hours twice ('Z' vs '+00:00' suffix): same key
     rows = [
-        _row(t0, 4.0, version=1, updated_at=t0),
-        _row(t0, 6.0, version=2, updated_at=t0 + timedelta(minutes=30)),
+        measurement_row(t0, 4.0, version=1, updated_at=t0),
+        measurement_row(t0, 6.0, version=2, updated_at=t0 + timedelta(minutes=30)),
     ]
     assert await repo.upsert_measurements(db, rows) == (1, 0)
     wind_speed_ms, version = await stored_value(db, t0)
     assert (wind_speed_ms, version) == (6.0, 2)
 
 
-async def test_quality_check_constraint(db, reference):
-    t0 = _hour()
+async def test_quality_check_constraint(db, clean, reference, measurement_row, hour):
+    t0 = hour
     with pytest.raises(Exception):  # noqa: B017 — PG IntegrityError, driver-wrapped
-        await repo.upsert_measurements(db, [_row(t0, 5.0, quality="broken")])
+        await repo.upsert_measurements(db, [measurement_row(t0, 5.0, quality="broken")])
     await db.rollback()
 
 
-async def test_power_at_interpolation(db, reference):
+async def test_power_at_interpolation(db, clean, reference):
     async def curve_at(v: float) -> float:
         return (await db.execute(
             text("SELECT power_at(:v)"), {"v": v})).scalar_one()
@@ -177,11 +109,11 @@ async def test_power_at_interpolation(db, reference):
     assert await curve_at(30.0) == 0.0           # beyond the curve → no operation
 
 
-async def test_hourly_energy_excludes_suspect(db, reference):
-    t0 = _hour()
+async def test_hourly_energy_excludes_suspect(db, clean, reference, measurement_row, hour):
+    t0 = hour
     await repo.upsert_measurements(db, [
-        _row(t0, 8.0, quality="ok"),
-        _row(t0 + HOUR_LATER, 8.0, quality="suspect"),
+        measurement_row(t0, 8.0, quality="ok"),
+        measurement_row(t0 + HOUR_LATER, 8.0, quality="suspect"),
     ])
     rows = (await db.execute(
         text("SELECT speed_hub_ms, energy_kwh FROM hourly_energy"
@@ -197,35 +129,119 @@ async def test_hourly_energy_excludes_suspect(db, reference):
     assert aep["aep_gross_kwh"] == pytest.approx(energy_kwh)
 
 
-async def test_daily_series_and_coverage(db, reference):
-    t0 = _hour()
+async def test_daily_series_and_coverage(db, clean, reference, measurement_row, hour):
+    # 12:00 anchor — a 4 h span crossing midnight would split into two days
+    # and flake for runs between 21:00 and 24:00 UTC.
+    t0 = hour.replace(hour=12)
     await repo.upsert_measurements(db, [
-        _row(t0, 8.0, quality="ok"),
-        _row(t0 + HOUR_LATER, 8.0, quality="ok"),
-        _row(t0 + 2 * HOUR_LATER, None, quality="malformed"),
-        _row(t0 + 3 * HOUR_LATER, 9.0, quality="ok"),
+        measurement_row(t0, 8.0, quality="ok"),
+        measurement_row(t0 + HOUR_LATER, 8.0, quality="ok"),
+        measurement_row(t0 + 2 * HOUR_LATER, None, quality="malformed"),
+        measurement_row(t0 + 3 * HOUR_LATER, 9.0, quality="ok"),
+        # a day with zero ok hours must still appear (a gap that carries QC counts)
+        measurement_row(t0 + 48 * HOUR_LATER, -0.5, quality="suspect"),
     ])
     daily = await repo.daily_series(db)
-    assert len(daily) >= 1
-    row = next(d for d in daily if d["day"] == t0.date())
-    assert row["hours"] == 3
-    assert row["mean_wind_ms"] == pytest.approx((8.0 + 8.0 + 9.0) / 3)
+    day = next(d for d in daily if d["day"] == t0.date())
+    gap_day = next(d for d in daily if d["day"] == (t0 + timedelta(days=2)).date())
+    assert day["hours"] == 3
+    assert day["mean_wind_ms"] == pytest.approx((8.0 + 8.0 + 9.0) / 3)
+    assert day["suspect_hours"] == 0
+    assert day["missing_hours"] == 1
+    assert day["energy_kwh"] is not None
+    assert gap_day["energy_kwh"] is None
+    assert gap_day["hours"] is None
+    assert gap_day["suspect_hours"] == 1
+    assert gap_day["missing_hours"] == 0
 
     coverage = await repo.coverage(db)
-    assert coverage["total_hours"] == 4
+    assert coverage["total_hours"] == 5
     assert coverage["usable_hours"] == 3
-    assert coverage["bad_hours"] == 1
-    assert coverage["suspect_hours"] == 0
-    assert coverage["expected_hours"] == 4          # contiguous 4 h span
+    assert coverage["suspect_hours"] == 1
     assert coverage["missing_hours"] == 0
+    assert coverage["malformed_hours"] == 1
+    assert coverage["expected_hours"] == 49   # contiguous span: 48 h + first hour
+    assert coverage["absent_hours"] == 44     # 49 expected - 5 stored
+    assert coverage["max_gap_hours"] == 44    # 45 h between the day neighbours
 
 
-async def test_ingest_run_journal(db, reference):
-    t0 = _hour()
+async def test_wind_series_trailing_window(db, clean, reference, measurement_row, hour):
+    t0 = hour
+    await repo.upsert_measurements(db, [
+        measurement_row(t0, 5.0, wind_dir=0),
+        measurement_row(t0 + HOUR_LATER, 7.0, wind_dir=100),
+        measurement_row(t0 + 2 * HOUR_LATER, None, quality="missing"),  # excluded
+        measurement_row(t0 + 3 * HOUR_LATER, 9.0, wind_dir=200),
+    ])
+    series = await repo.wind_series(db, hours=2)
+    assert [(p["wind_speed_ms"], p["wind_dir_deg"]) for p in series] == \
+        [(7.0, 100), (9.0, 200)]
+    assert series[0]["timestamp"] < series[1]["timestamp"]   # oldest first
+
+
+async def test_wind_rose_matches_hand_computed_sectors(
+    db, clean, reference, measurement_row, hour
+):
+    """The rose histogram matches a hand-computed sector count (plan phase 3)."""
+    t0 = hour
+    # sectors hand-computed with ROUND(deg / 22.5) % 16 (direction-centered):
+    # 8×N (0° → sector 0), 1×N wrap (358° → 15.9¹¹ → 16 % 16 = 0),
+    # 3×NNE (30° → 1), 2×S (180° → 8), 1×NNW (343° → 15.24 → 15)
+    rows = (
+        [measurement_row(t0 + timedelta(hours=h), 6.0, wind_dir=0)
+         for h in range(8)]
+        + [measurement_row(t0 + timedelta(hours=50, minutes=5), 5.0, wind_dir=358)]
+        + [measurement_row(t0 + timedelta(hours=60 + h, minutes=5), 7.0, wind_dir=30)
+           for h in range(3)]
+        + [measurement_row(t0 + timedelta(hours=100 + h, minutes=10), 4.0, wind_dir=180)
+           for h in range(2)]
+        + [measurement_row(t0 + timedelta(hours=200, minutes=15), 5.0, wind_dir=343)]
+    )
+    await repo.upsert_measurements(db, rows)
+
+    rose = await repo.wind_rose(db)
+    assert len(rose) == 16
+    by_direction = {s["direction"]: s for s in rose}
+    assert by_direction["N"]["frequency"] == 9           # incl. the 360° wrap
+    assert by_direction["N"]["mean_speed_ms"] == pytest.approx((8 * 6.0 + 5.0) / 9)
+    assert by_direction["NNE"]["frequency"] == 3
+    assert by_direction["NNE"]["mean_speed_ms"] == pytest.approx(7.0)
+    assert by_direction["S"]["frequency"] == 2
+    assert by_direction["S"]["mean_speed_ms"] == pytest.approx(4.0)
+    assert by_direction["NNW"]["frequency"] == 1
+    assert by_direction["SW"]["frequency"] == 0          # empty sector stays present
+    assert by_direction["SW"]["mean_speed_ms"] is None
+    assert by_direction["N"]["degrees"] == 0
+    assert by_direction["E"]["degrees"] == 90
+
+
+async def test_ingest_runs_recent(db, clean, hour):
+    t0 = hour
+    for i, status in enumerate(["ok", "partial", "ok"]):
+        await repo.record_ingest_run(
+            db, started_at=t0 + timedelta(minutes=i),
+            finished_at=t0 + timedelta(minutes=i + 1),
+            status=status, pages=i, inserted=i, updated=0,
+            qc_suspect=2 * i if status == "partial" else 0,
+        )
+    await db.commit()
+
+    runs = await repo.ingest_runs_recent(db, limit=2)
+    assert [r["status"] for r in runs] == ["ok", "partial"]     # newest first
+    assert runs[1]["qc_suspect"] == 2
+    assert runs[0]["qc_suspect"] == 0
+    assert {"id", "started_at", "finished_at", "status", "pages", "inserted",
+            "updated", "frame_from", "frame_to", "qc_missing", "qc_suspect",
+            "qc_malformed", "max_gap_hours", "detail"} <= set(runs[0])
+    assert len(await repo.ingest_runs_recent(db, limit=10)) == 3
+
+
+async def test_ingest_run_journal(db, clean, reference, measurement_row, hour):
+    t0 = hour
     health = await repo.ingest_health(db)
     assert health["last_run"] is None
 
-    await repo.upsert_measurements(db, [_row(t0, 5.0)])
+    await repo.upsert_measurements(db, [measurement_row(t0, 5.0)])
     run = await repo.record_ingest_run(
         db, started_at=t0, finished_at=t0 + timedelta(minutes=4),
         status="ok", pages=2, inserted=1, updated=0,
