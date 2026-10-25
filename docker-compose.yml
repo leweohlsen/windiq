@@ -1,10 +1,30 @@
 name: windiq
 
 services:
+  # PostgreSQL 17 — access: `docker compose exec db psql -U windiq`
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: windiq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-windiq}
+      POSTGRES_DB: windiq
+    ports:
+      - "127.0.0.1:5432:5432"   # dev only: locally running backend + tests
+    volumes:
+      - windiq-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U windiq -d windiq"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   # FastAPI backend — internal only, reachable via nginx's /api reverse proxy
   backend:
     build: ./backend
     image: windiq-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
     healthcheck:
       test:
         [
@@ -18,6 +38,9 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
 
   # React build served by nginx — the single entrypoint from the host
   frontend:
@@ -31,3 +54,6 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  windiq-pgdata:

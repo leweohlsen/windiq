@@ -19,9 +19,12 @@ RUN groupadd --gid 10001 app \
 ENV HOME=/home/app
 
 COPY --chown=app:app app ./app
+COPY --chown=app:app alembic.ini ./
+COPY --chown=app:app alembic ./alembic
 
 EXPOSE 8000
 
 USER app
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run migrations before serving; idempotent and cheap after the first boot.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
