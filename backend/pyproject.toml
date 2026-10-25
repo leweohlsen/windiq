@@ -8,12 +8,19 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "python-dotenv>=1.0",
     "wind-iq-measurement-api-client",
+    "tenacity>=9.2.1",
 ]
 
 [dependency-groups]
 dev = [
     "openapi-python-client",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [tool.uv.sources]
 wind-iq-measurement-api-client = { path = "packages/windiq_client", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

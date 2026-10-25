@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator, Generator
 import httpx
 
 from .errors import WindIQAuthError
+from .retry import retrying
 
 TOKEN_URL = "/auth/token"
 
@@ -16,12 +17,15 @@ class BearerTokenAuth(httpx.Auth):
 
     Exchanges client credentials for an access token on first use and
     transparently re-authenticates when the token expires or a 401 is received.
+    Token fetches go through the shared retryer for resilience against a
+    flaky auth endpoint.
     """
 
-    def __init__(self, base_url: str, client_id: str, client_secret: str) -> None:
+    def __init__(self, base_url, client_id, client_secret, retryer=None) -> None:
         self._base_url = base_url.rstrip("/")
         self._client_id = client_id
         self._client_secret = client_secret
+        self._retryer = retryer or retrying()
         self._token: str | None = None
         self._expires_at = 0.0
 
@@ -68,13 +72,18 @@ class BearerTokenAuth(httpx.Auth):
             )
         self._extract(response)
 
-    async def _fetch_token_async(self) -> None:
+    async def _do_fetch_once(self) -> httpx.Response:
         async with httpx.AsyncClient(base_url=self._base_url, timeout=15.0) as client:
-            response = await client.post(
+            return await client.post(
                 TOKEN_URL,
                 json={"client_id": self._client_id, "client_secret": self._client_secret},
             )
-        self._extract(response)
+
+    async def _fetch_token_async(self) -> None:
+        async def attempt() -> None:
+            self._extract(await self._do_fetch_once())
+
+        await self._retryer(attempt)
 
     async def fetch_token(self) -> str:
         """Fetch/refresh the access token explicitly. Useful for smoke checks."""

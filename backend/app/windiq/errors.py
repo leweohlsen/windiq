@@ -13,7 +13,8 @@ class WindIQAuthError(WindIQError):
 class WindIQAPIError(WindIQError):
     """A WindIQ API endpoint returned a documented error response."""
 
-    def __init__(self, status_code: int, detail: str) -> None:
+    def __init__(self, status_code: int, detail: str, retry_after: float | None = None) -> None:
         self.status_code = status_code
         self.detail = detail
+        self.retry_after = retry_after
         super().__init__(f"{status_code}: {detail}")

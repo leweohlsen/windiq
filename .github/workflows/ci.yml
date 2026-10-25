@@ -53,6 +53,10 @@ jobs:
         working-directory: backend
         run: uv run python -c "from app.main import app; print('app imports OK')"
 
+      - name: Test
+        working-directory: backend
+        run: uv run pytest
+
   images:
     name: Docker — build both images
     runs-on: ubuntu-latest
