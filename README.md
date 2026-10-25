@@ -16,27 +16,23 @@ Then open:
 
 The backend container is never exposed to the host — all traffic flows through nginx.
 
-## Hot-reload development
+Useful Compose commands: `docker compose up --build` (foreground), add `--detach` to run in the background, `docker compose logs --follow` for logs, and `docker compose down` to stop and remove.
+
+## Development (hot reload, no Docker)
+
+Run the two halves directly with your local toolchain:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
-```
-
-> Requires Docker Compose v2.24.4 or newer; the development overlay uses the `!override` tag.
-
-- Vite dev server with HMR on http://localhost:5173 (`/api` is proxied to the backend container)
-- uvicorn runs with `--reload` and `./backend/app` mounted as a volume
-
-## Local tooling (optional)
-
-```sh
-# Front end
-cd frontend && npm install && npm run build   # typecheck + production bundle
-npm run dev                                    # needs a backend on :8000 (or set BACKEND_URL)
-
-# Back end
+# Terminal 1 — API on http://localhost:8000 (reload on edit)
 cd backend && uv sync && uv run uvicorn app.main:app --reload
+
+# Terminal 2 — UI on http://localhost:5173 (HMR on edit)
+cd frontend && npm install && npm run dev
 ```
+
+Open http://localhost:5173; the Vite dev server proxies `/api/*` to the backend, so the app is same-origin just like in production. Swagger docs are at http://localhost:8000/api/docs. The API base URL is configurable via `BACKEND_URL` in the frontend (defaults to `http://localhost:8000`).
+
+Production builds are still exercised with Docker (above) — that's where Docker earns its keep: a real nginx-served bundle instead of the dev server.
 
 ## Structure
 
@@ -45,6 +41,5 @@ frontend/   React + TypeScript + Vite · multi-stage Dockerfile → nginx
   Dockerfile      build stage (npm ci + vite build) → runtime (nginx)
   nginx.conf      gzip · /assets caching · /api proxy · SPA fallback
 backend/    FastAPI + uvicorn · uv for dependency management
-  app/main.py     app factory, CORS, /api docs
-  app/routes/     versioned API routers (health)
+  app/main.py     app, /api/health endpoint, /api docs
 ```
