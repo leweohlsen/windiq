@@ -6,7 +6,14 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
+    "python-dotenv>=1.0",
+    "wind-iq-measurement-api-client",
 ]
 
 [dependency-groups]
-dev = []
+dev = [
+    "openapi-python-client",
+]
+
+[tool.uv.sources]
+wind-iq-measurement-api-client = { path = "packages/windiq_client", editable = true }

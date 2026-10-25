@@ -11,6 +11,7 @@ WORKDIR /app
 
 # Lockfile first for better layer caching
 COPY pyproject.toml uv.lock ./
+COPY packages ./packages
 RUN uv sync --locked --no-install-project --no-dev
 
 RUN groupadd --gid 10001 app \

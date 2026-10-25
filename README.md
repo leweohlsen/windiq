@@ -55,4 +55,43 @@ frontend/   React + TypeScript + Vite · multi-stage Dockerfile → nginx
   nginx.conf      gzip · /assets caching · /api proxy · SPA fallback
 backend/    FastAPI + uvicorn · uv for dependency management
   app/main.py     app, /api/health endpoint, /api docs
+  app/windiq/     typed client facade for the WindIQ Measurement API (auto-generated client + bearer-token auth)
+  packages/
+    windiq_client/
+                    auto-generated OpenAPI client (openapi-python-client → httpx + attrs). DO NOT edit by hand:
+                    regenerate with `uv run scripts/generate-client.sh` from https://windiq-mock-api.sliplane.app/openapi.json
+
+## WindIQ Measurement API client
+
+The backend consumes turbine data from the WindIQ mock API (spec: https://windiq-mock-api.sliplane.app/openapi.json).
+
+The client library in `backend/packages/windiq_client/` is **generated** from that spec with
+[openapi-python-client](https://github.com/dynamicalsoftware/openapi-python-client) (pydantic-style typed models + httpx).
+To regenerate after the spec changes:
+
+```sh
+cd backend && uv run scripts/generate-client.sh
+```
+
+Credentials come from the environment (see `backend/.env.example`; copy to `backend/.env` for local dev — it is gitignored):
+
+```
+WIQ_API_BASE_URL=https://windiq-mock-api.sliplane.app
+WIQ_CLIENT_ID=...
+WIQ_CLIENT_SECRET=...
+```
+
+`app/windiq/` wraps the generated code with a small facade that handles the
+client-credentials token exchange (`POST /auth/token`), token caching and refresh:
+
+```python
+from app.windiq import WindIQClient
+
+client = WindIQClient()          # loads WIQ_* from the environment / .env
+site = await client.site()       # typed model
+page = await client.measurements(limit=100)
+
+while page.next_cursor:          # cursor pagination
+    page = await client.measurements(limit=100, cursor=page.next_cursor)
+```
 ```
