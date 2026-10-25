@@ -100,6 +100,9 @@ class WindIQClient:
         limit: int | None = None,
         cursor: str | None = None,
     ) -> MeasurementPage:
+        # Server 422s above 500 → clamp caller-supplied limits (quirks B1)
+        if limit is not None:
+            limit = min(limit, 500)
         return await self._with_retry(
             get_measurements_v1_measurements_get.asyncio_detailed,
             client=self._client,

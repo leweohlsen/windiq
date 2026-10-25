@@ -40,8 +40,41 @@ services:
       start_period: 10s
     restart: unless-stopped
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # One-shot migration — api, worker and scheduler wait for it
+  migrate:
+    image: ghcr.io/leweohlsen/windiq-backend:latest
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
+    depends_on:
       db:
         condition: service_healthy
+    restart: "no"
+
+  # Ingest worker — full backfill once at startup, then scheduled/on-demand tasks
+  worker:
+    image: ghcr.io/leweohlsen/windiq-backend:latest
+    command: taskiq worker app.worker:broker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # taskiq controller — send-only, cron */5 → `periodic_sync`
+  scheduler:
+    image: ghcr.io/leweohlsen/windiq-backend:latest
+    command: taskiq scheduler app.worker:scheduler
+    environment:
+      DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   # React build served by nginx — the single entrypoint from the host
   frontend:

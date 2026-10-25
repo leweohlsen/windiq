@@ -39,8 +39,47 @@ services:
       start_period: 10s
     restart: unless-stopped
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # One-shot migration — api, worker and scheduler wait for it, so the
+  # migration never races the ingest worker's schema access.
+  migrate:
+    build: ./backend
+    image: windiq-backend
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
+    depends_on:
       db:
         condition: service_healthy
+    restart: "no"
+
+  # Ingest worker — runs a full backfill once at startup (idempotent), then
+  # executes scheduled and on-demand tasks. SIGTERM: taskiq drains in-flight tasks.
+  worker:
+    build: ./backend
+    image: windiq-backend
+    command: taskiq worker app.worker:broker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # taskiq controller — send-only; sends `periodic_sync` per cron. Postgres
+  # doubles as the broker; taskiq-pg keeps its own taskiq_messages table there.
+  scheduler:
+    build: ./backend
+    image: windiq-backend
+    command: taskiq scheduler app.worker:scheduler
+    environment:
+      DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   # React build served by nginx — the single entrypoint from the host
   frontend:

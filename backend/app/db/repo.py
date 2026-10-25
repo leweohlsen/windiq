@@ -13,6 +13,7 @@ class MeasurementRow(TypedDict):
 
     mast_id: str
     timestamp: datetime
+    timestamp_raw: str
     wind_speed_ms: Optional[float]
     unit: str
     wind_speed_raw: str
@@ -174,12 +175,16 @@ async def record_ingest_run(
     session: AsyncSession, *, started_at: datetime, finished_at: datetime,
     status: str, pages: int, inserted: int, updated: int,
     frame_from: Optional[datetime] = None, frame_to: Optional[datetime] = None,
-    detail: Optional[str] = None,
+    qc_missing: int = 0, qc_suspect: int = 0, qc_malformed: int = 0,
+    max_gap_hours: Optional[int] = None, detail: Optional[str] = None,
 ) -> IngestRun:
     run = IngestRun(
         started_at=started_at, finished_at=finished_at, status=status,
         pages=pages, inserted=inserted, updated=updated,
-        frame_from=frame_from, frame_to=frame_to, detail=detail,
+        frame_from=frame_from, frame_to=frame_to,
+        qc_missing=qc_missing, qc_suspect=qc_suspect,
+        qc_malformed=qc_malformed, max_gap_hours=max_gap_hours,
+        detail=detail,
     )
     session.add(run)
     await session.flush()

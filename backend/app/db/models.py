@@ -102,6 +102,8 @@ class Measurement(Base):
     unit: Mapped[str] = mapped_column(Text, nullable=False)
     # Original value (e.g. "-999.0", "7.47"), for audit
     wind_speed_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    # Original timestamp string incl. timezone suffix (suffix evidence)
+    timestamp_raw: Mapped[str] = mapped_column(Text, nullable=False)
     wind_dir_deg: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     quality: Mapped[str] = mapped_column(
         Text, nullable=False, default="ok", server_default="ok"
@@ -135,4 +137,10 @@ class IngestRun(Base):
     frame_to: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # QC defect counts of this run; a run with many suspect rows is `partial`
+    qc_missing: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    qc_suspect: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    qc_malformed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # largest data hole (h) inside the fetched frame
+    max_gap_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

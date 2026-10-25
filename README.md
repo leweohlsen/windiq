@@ -24,7 +24,8 @@ Formeln (Case Study): `v_Nabe = v_Mess · (h_Nabe / h_Mess)^α` ·
 AEP netto = AEP brutto × (1 − Verfügbarkeit) × (1 − elektrisch) × (1 − Abschattung) ·
 P90 = P50 × (1 − 1,282 × U). Suspect/missing-Stunden zählen **nicht** zur Energie.
 
-Status: Persistenz-Layer in Arbeit. Phasenplan und Abnahmekriterien:
+Status: Persistenz-Layer (Phase 1) und Ingest-Worker (Phase 2) vollständig —
+Voll-Backfill in ~8 s, idempotent, QC/Journal live. Phasenplan und Abnahmekriterien:
 [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Quickstart

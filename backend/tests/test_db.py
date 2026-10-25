@@ -84,6 +84,7 @@ def _row(ts: datetime, wind: str | float | None, unit: str = "m/s",
     return {
         "mast_id": "TEST-M",
         "timestamp": ts,
+        "timestamp_raw": ts.isoformat(),
         "wind_speed_ms": wind_speed_ms,
         "unit": unit,
         "wind_speed_raw": str(wind),
