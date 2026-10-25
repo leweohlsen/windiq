@@ -2,6 +2,10 @@
 #
 # Unlike docker-compose.yml, no `build:` sections: images come pre-built
 # from GHCR (see .github/workflows/deploy.yml). Pin `sha-<commit>` tags to roll back.
+#
+# pull_policy: always — Coolify runs plain `docker compose up -d`, whose default
+# policy ("missing") would silently reuse the old `:latest` already cached on the
+# host and deploy stale code.
 name: windiq
 
 services:
@@ -24,6 +28,7 @@ services:
   # FastAPI backend — internal only, reachable via nginx's /api reverse proxy
   backend:
     image: ghcr.io/leweohlsen/windiq-backend:latest
+    pull_policy: always
     environment:
       DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
     healthcheck:
@@ -46,6 +51,7 @@ services:
   # One-shot migration — api, worker and scheduler wait for it
   migrate:
     image: ghcr.io/leweohlsen/windiq-backend:latest
+    pull_policy: always
     command: alembic upgrade head
     environment:
       DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
@@ -57,6 +63,7 @@ services:
   # Ingest worker — full backfill once at startup, then scheduled/on-demand tasks
   worker:
     image: ghcr.io/leweohlsen/windiq-backend:latest
+    pull_policy: always
     command: taskiq worker app.worker:broker
     environment:
       DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
@@ -68,6 +75,7 @@ services:
   # taskiq controller — send-only, cron */5 → `periodic_sync`
   scheduler:
     image: ghcr.io/leweohlsen/windiq-backend:latest
+    pull_policy: always
     command: taskiq scheduler app.worker:scheduler
     environment:
       DATABASE_URL: postgresql+asyncpg://windiq:${POSTGRES_PASSWORD:-windiq}@db:5432/windiq
@@ -79,6 +87,7 @@ services:
   # React build served by nginx — the single entrypoint from the host
   frontend:
     image: ghcr.io/leweohlsen/windiq-frontend:latest
+    pull_policy: always
     depends_on:
       backend:
         condition: service_healthy
