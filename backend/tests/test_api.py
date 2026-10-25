@@ -47,10 +47,10 @@ class StubTask:
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.sent = 0
+        self.sent: list[dict] = []
 
-    async def kiq(self) -> None:
-        self.sent += 1
+    async def kiq(self, **kwargs) -> None:
+        self.sent.append(kwargs)
 
 
 async def test_queue_ingest_defaults_to_sync(monkeypatch):
@@ -59,8 +59,8 @@ async def test_queue_ingest_defaults_to_sync(monkeypatch):
     monkeypatch.setattr(api_mod, "run_backfill", backfill_task)
 
     assert await api_mod.queue_ingest() == {"queued": True}
-    assert sync_task.sent == 1
-    assert backfill_task.sent == 0
+    assert list(sync_task.sent[0]) == ["run_id"]         # run id travels with the task
+    assert backfill_task.sent == []
 
 
 async def test_queue_ingest_backfill_mode(monkeypatch):
@@ -69,20 +69,23 @@ async def test_queue_ingest_backfill_mode(monkeypatch):
     monkeypatch.setattr(api_mod, "run_backfill", backfill_task)
 
     assert await api_mod.queue_ingest("backfill") == {"queued": True}
-    assert backfill_task.sent == 1
-    assert sync_task.sent == 0
+    assert "run_id" in backfill_task.sent[0]
+    assert sync_task.sent == []
 
 
 async def test_daily_endpoint_qc_columns(db, clean, reference, measurement_row, hour):
     assert await api_mod.daily(30) == []      # wiped DB never crashes the endpoint
 
+    # 12:00 anchor — hour+1 crossing UTC midnight would split into two days
+    # and flake for runs between 21:00 and 24:00 UTC (see test_db.py sibling)
+    t0 = hour.replace(hour=12)
     await repo.upsert_measurements(db, [
-        measurement_row(hour, 8.0, quality="ok"),
-        measurement_row(hour + HOUR, -0.5, quality="suspect"),
+        measurement_row(t0, 8.0, quality="ok"),
+        measurement_row(t0 + HOUR, -0.5, quality="suspect"),
     ])
     await db.commit()
     daily = await api_mod.daily(30)
-    today = next(p for p in daily if p["day"] == hour.date())
+    today = next(p for p in daily if p["day"] == t0.date())
     assert today["energy_kwh"] is not None
     assert today["suspect_hours"] == 1
     assert today["missing_hours"] == 0

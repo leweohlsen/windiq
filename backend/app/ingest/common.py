@@ -6,6 +6,7 @@ Both the one-time backfill and the periodic sync walk the same paginated
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, AsyncIterator, Callable, Optional
@@ -74,6 +75,11 @@ class IngestStats:
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def new_run_id() -> str:
+    """Queue tasks (api trigger) generate it, the ingest run adopts it in logs."""
+    return uuid.uuid4().hex[:12]
 
 
 def mast_values(mast: Mast) -> dict[str, Any]:

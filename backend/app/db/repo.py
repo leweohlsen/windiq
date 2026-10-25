@@ -246,6 +246,33 @@ async def wind_rose(session: AsyncSession, days: int = ROSE_WINDOW_DAYS) -> list
     ]
 
 
+# Startup-backfill gate: history reach + forward freshness (plan finding 2)
+WINDOW_MIN_HISTORY_DAYS = 350
+WINDOW_FRESH_HOURS = 48
+
+
+async def ingest_window_covered(session: AsyncSession) -> bool:
+    """True when the store already reflects a complete ingest.
+
+    Cheap two-point check, not a full audit: history reaches back (the API
+    slides a 1-year window, so ≥ 350 d means the backfill ran to the bottom)
+    and the newest revision arrived within the last 48 h. A partial or
+    crashed first backfill fails at least one of the two and then re-runs.
+    """
+    result = await session.execute(text("""
+        SELECT COALESCE(
+                   (SELECT MIN(timestamp) FROM measurements)
+                   < now() - make_interval(days => :min_history_days), false)
+               AND COALESCE(
+                   (SELECT MAX(updated_at) FROM measurements)
+                   >= now() - make_interval(hours => :fresh_hours), false)
+    """), {
+        "min_history_days": WINDOW_MIN_HISTORY_DAYS,
+        "fresh_hours": WINDOW_FRESH_HOURS,
+    })
+    return bool(result.scalar())
+
+
 async def ingest_runs_recent(session: AsyncSession, limit: int = 10) -> list[dict]:
     """Last N ingest runs, newest first (dashboard history table)."""
     result = await session.execute(text("""

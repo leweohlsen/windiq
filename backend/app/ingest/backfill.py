@@ -23,6 +23,7 @@ from app.ingest.common import (
     iter_measurement_pages,
     mast_values,
     max_gap_hours,
+    new_run_id,
     now_utc,
     site_values,
     turbine_values,
@@ -55,7 +56,8 @@ async def persist_reference(
 
 async def _run(
     session: AsyncSession, client: WindIQClient, *,
-    started_at: datetime, updated_since: Optional[datetime] = None,
+    started_at: datetime, run_id: Optional[str] = None,
+    updated_since: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Shared ingest body: reference refresh + paged measurements + journal.
 
@@ -65,10 +67,16 @@ async def _run(
     `updated_since=None` walks the full window (backfill), otherwise only
     rows changed inside the watermark window arrive (sync).
     """
+    run_id = run_id or new_run_id()
+    mode = "sync" if updated_since is not None else "backfill"
+    log.info(
+        "ingest started run=%s mode=%s updated_since=%s", run_id, mode, updated_since
+    )
     locked = await session.scalar(
         text("SELECT pg_try_advisory_xact_lock(hashtext('windiq:ingest'))")
     )
     if not locked:
+        log.warning("ingest skipped run=%s reason=run-already-active", run_id)
         return {"status": "skipped", "reason": "run already active"}
 
     mast_id, cut_out_ms = await persist_reference(session, client)
@@ -94,6 +102,12 @@ async def _run(
         detail=compile_detail(stats, stats.dead_letters),
     )
     await session.commit()
+    log.info(
+        "ingest finished run=%s status=%s pages=%s inserted=%s updated=%s"
+        " qc=%s frame=%s…%s max_gap_hours=%s",
+        run_id, stats.status, stats.pages, stats.inserted, stats.updated,
+        stats.qc, stats.frame_from, stats.frame_to, max_gap,
+    )
     return {
         "status": stats.status, "pages": stats.pages,
         "inserted": stats.inserted, "updated": stats.updated,
@@ -101,20 +115,27 @@ async def _run(
     }
 
 
-async def run_backfill(client: Optional[WindIQClient] = None) -> dict[str, Any]:
+async def run_backfill(
+    client: Optional[WindIQClient] = None, run_id: Optional[str] = None
+) -> dict[str, Any]:
     """Full backfill (all pages from the API window start → backfill=true)."""
     client = client or WindIQClient()
     started_at = now_utc()
+    run_id = run_id or new_run_id()
     try:
         async with SessionLocal() as session:
-            return await _run(session, client, started_at=started_at)
+            return await _run(
+                session, client, started_at=started_at, run_id=run_id
+            )
     except Exception as exc:
-        log.exception("backfill failed")
-        await journal_error(exc, started_at)
+        log.exception("ingest failed run=%s", run_id)
+        await journal_error(exc, started_at, run_id)
         raise
 
 
-async def journal_error(exc: Exception, started_at: datetime) -> None:
+async def journal_error(
+    exc: Exception, started_at: datetime, run_id: Optional[str] = None
+) -> None:
     """Write an `error` run row in its own transaction (main tx is rolled back)."""
     try:
         async with SessionLocal() as session:
@@ -124,5 +145,8 @@ async def journal_error(exc: Exception, started_at: datetime) -> None:
                     status="error", pages=0, inserted=0, updated=0,
                     detail=f"{type(exc).__name__}: {exc}",
                 )
+                if run_id:
+                    log.error("ingest journaled run=%s status=error detail=%s",
+                              run_id, exc)
     except Exception:
         log.exception("could not journal the failed ingest run")

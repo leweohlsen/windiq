@@ -24,12 +24,12 @@ Formeln (Case Study): `v_Nabe = v_Mess · (h_Nabe / h_Mess)^α` ·
 AEP netto = AEP brutto × (1 − Verfügbarkeit) × (1 − elektrisch) × (1 − Abschattung) ·
 P90 = P50 × (1 − 1,282 × U). Suspect/missing-Stunden zählen **nicht** zur Energie.
 
-Status: Persistenz-Layer (Phase 1), Ingest-Worker (Phase 2) und das Dashboard
-(API Phase 3 + SPA Phase 4) vollständig — Voll-Backfill in ~8 s, idempotent,
-QC/Journal live; Dashboard mit P50/P90-Karten, Tageschart (Recharts, QC-Färbung,
-Range-Switcher), Windrose + 48-h-Windlinie, Datenstatus („Sync now“), Ingest-
-Historie und Methodik. Phasenplan und Abnahmekriterien:
-[docs/implementation-plan.md](docs/implementation-plan.md).
+Status: Persistenz-Layer (Phase 1), Ingest-Worker (Phase 2), Dashboard
+(API Phase 3 + SPA Phase 4) und Betrieb/Observability (Phase 5) vollständig —
+Voll-Backfill in ~8 s, idempotent, QC/Journal live; Dashboard mit P50/P90-Karten,
+Tageschart (Recharts, QC-Färbung, Range-Switcher), Windrose + 48-h-Windlinie,
+Datenstatus („Sync now“), Ingest-Historie und Methodik. Phasenplan und
+Abnahmekriterien: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Quickstart
 
@@ -80,6 +80,33 @@ lesen sie über `docker-compose.dev.yml`; `DATABASE_URL` kommt trotzdem aus Comp
   `docker-compose.prod.yml` pinnen.
 - Das `db`-Volume bleibt bei Rebuilds erhalten; Schema-Änderungen laufen über
   Alembic-Migrationen.
+
+## Betrieb (Phase 5)
+
+- **Run-IDs in den Logs**: Jeder Ingest-Zyklus führt eine `run=<id>`-Marke
+  durch alle Zeilen — der API-Auslöser (`ingest queued run=…`) erzeugt sie,
+  der Worker übernimmt sie (`ingest started/finished run=… mode=…`).
+  Einen Zyklus zurückverfolgen:
+  `docker compose logs -f backend worker | grep run=<id>`
+  (Cron-Läufe des Schedulers erzeugen die ID erst im Worker.)
+- **„Sync now“ bei Worker-Ausfall**: Der POST-Endpunkt queued die Aufgabe
+  ({queued: true}), aber taskiq-pg stellt nur zu, während ein Worker LISTENt —
+  eine in dieser Zeit gequeue Aufgabe läuft **nie** nach (das INSERT-NOTIFY ist
+  verloren, ein Worker-Restart spielt die Tabelle nicht nach). Das Badge im
+  Dashboard bleibt, bis nach der Worker-Rückkehr der nächste Cron-Lauf
+  (≤ 5 min, der Cron kompensiert) in `ingest_runs` auftaucht. Signal für
+  Ausfälle bleiben Staleness + Max-Gap im Statuspanel; der gequeue Geist wird
+  beim nächsten Worker-Start weggesweept.
+- **Worker-Start**: Vor dem Backfill wird `taskiq_messages` geleert
+  (Startup-Sweep; gequeue Aufgaben ohne Worker sind nur Geister, konsumierte
+  sind längst ack-gelöscht — die Daten holt der nächste Cron-Tick nach). Danach
+  läuft der Voll-Backfill nur, wenn das Fenster **nicht** abgedeckt ist
+  (Historie ≥ 350 d UND jüngste Revision ≤ 48 h alt); ein Neustart bei
+  abgedecktem Fenster schreibt **keinen** `ingest_runs`-Eintrag.
+- **`ingest_runs` ist das Ops-Log**: letzter Lauf + Staleness in
+  `/api/health`, Historie im Dashboard; frisches Backup mit
+  `docker compose exec db pg_dump -U windiq -Fc windiq > windiq-$(date +%F).dump`
+  (Einspielen: `pg_restore -U windiq -d windiq --clean <datei>`).
 
 ## Struktur
 

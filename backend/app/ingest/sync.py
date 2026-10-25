@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import SessionLocal
 from app.ingest.backfill import _run, journal_error
+from app.ingest.common import new_run_id
 from app.windiq.client import WindIQClient
 
 log = logging.getLogger(__name__)
@@ -34,9 +35,12 @@ def _as_utc(dt: datetime) -> datetime:
         else dt.replace(tzinfo=timezone.utc)
 
 
-async def run_sync(client: Optional[WindIQClient] = None) -> dict[str, Any]:
+async def run_sync(
+    client: Optional[WindIQClient] = None, run_id: Optional[str] = None
+) -> dict[str, Any]:
     """One periodic ingest cycle; same journaling + locking as the backfill."""
     started_at = _as_utc(datetime.now(timezone.utc))
+    run_id = run_id or new_run_id()
     client = client or WindIQClient()
     try:
         async with SessionLocal() as session:
@@ -45,9 +49,10 @@ async def run_sync(client: Optional[WindIQClient] = None) -> dict[str, Any]:
             if mark is not None:
                 updated_since = _as_utc(mark) - timedelta(hours=SYNC_OVERLAP_HOURS)
             return await _run(
-                session, client, started_at=started_at, updated_since=updated_since
+                session, client, started_at=started_at, run_id=run_id,
+                updated_since=updated_since,
             )
     except Exception as exc:
-        log.exception("sync failed")
-        await journal_error(exc, started_at)
+        log.exception("ingest failed run=%s mode=sync", run_id)
+        await journal_error(exc, started_at, run_id)
         raise

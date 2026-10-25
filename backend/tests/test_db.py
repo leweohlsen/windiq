@@ -255,6 +255,34 @@ async def test_ingest_run_journal(db, clean, reference, measurement_row, hour):
     assert health["last_data_update"] is not None
 
 
+async def test_ingest_window_covered_gate(
+    db, clean, reference, measurement_row, hour
+):
+    """Startup-backfill gate: deep history + fresh forward progress = covered."""
+    fresh = hour  # within the 48 h freshness window
+    assert await repo.ingest_window_covered(db) is False   # empty store
+
+    # deep history but no forward progress (stale revisions) → not covered
+    await repo.upsert_measurements(db, [
+        measurement_row(hour - timedelta(days=400), 7.0, updated_at=fresh - timedelta(days=10))
+    ])
+    await db.commit()
+    assert await repo.ingest_window_covered(db) is False
+
+    # fresh forward progress, but history not deep → not covered
+    await db.execute(text("DELETE FROM measurements"))
+    await repo.upsert_measurements(db, [measurement_row(hour - HOUR_LATER, 7.0)])
+    await db.commit()
+    assert await repo.ingest_window_covered(db) is False
+
+    # both conditions met → a worker restart must not re-run the backfill
+    await repo.upsert_measurements(db, [
+        measurement_row(hour - timedelta(days=400), 7.0, updated_at=fresh)
+    ])
+    await db.commit()
+    assert await repo.ingest_window_covered(db) is True
+
+
 async def test_migrations_roundtrip():
     """downgrade base must be clean, and re-upgrading restores the schema."""
     def run(version: str) -> None:

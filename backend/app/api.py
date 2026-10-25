@@ -4,6 +4,7 @@ All endpoints are plain JSON (pydantic response models), no auth — the SPA
 sits same-origin behind the nginx proxy. The POST endpoint only produces a
 taskiq message; progress is read from `ingest_runs` via GET, never polled.
 """
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
@@ -14,9 +15,11 @@ from sqlalchemy import select
 from app.db import repo
 from app.db.engine import SessionLocal
 from app.db.models import Mast, Site, Turbine
+from app.ingest.common import new_run_id
 from app.worker import periodic_sync, run_backfill
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 DAYS_CAP = 365
 WIND_HOURS_CAP = 168
@@ -242,9 +245,15 @@ async def ingest_runs(limit: int = 10) -> list[IngestRunOut]:
 
 @router.post("/api/ingest/run")
 async def queue_ingest(mode: Literal["sync", "backfill"] = "sync") -> QueuedOut:
-    """Queue an ingest run; returns immediately, progress shows in ingest_runs."""
+    """Queue an ingest run; returns immediately, progress shows in ingest_runs.
+
+    The run id travels with the task message so the api line and the worker
+    lines of one cycle share it (phase 5: a run id per ingest cycle).
+    """
+    run_id = new_run_id()
+    log.info("ingest queued run=%s mode=%s", run_id, mode)
     task = run_backfill if mode == "backfill" else periodic_sync
-    await task.kiq()
+    await task.kiq(run_id=run_id)
     return {"queued": True}
 
 
