@@ -25,8 +25,6 @@ services:
   # React build served by nginx — the single entrypoint from the host
   frontend:
     image: ghcr.io/leweohlsen/windiq-frontend:latest
-    ports:
-      - "8080:80"
     depends_on:
       backend:
         condition: service_healthy
