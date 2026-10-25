@@ -34,6 +34,19 @@ Open http://localhost:5173; the Vite dev server proxies `/api/*` to the backend,
 
 Production builds are still exercised with Docker (above) — that's where Docker earns its keep: a real nginx-served bundle instead of the dev server.
 
+## CI/CD (GitHub Actions → Coolify)
+
+- **CI** (`.github/workflows/ci.yml`) — every PR and push to `main`: type-checks & builds the frontend, syncs the backend against `uv.lock`, and builds both Docker images.
+- **Deploy** (`.github/workflows/deploy.yml`) — on push to `main`: builds and pushes `windiq-backend` / `windiq-frontend` images to GHCR (`ghcr.io/leweohlsen/…:latest` + `:sha-<commit>`), then pings the Coolify deploy webhook so the VPS pulls the fresh images (`docker-compose.prod.yml`).
+
+One-time setup:
+
+1. Coolify: create a **Docker Compose** app from this repo, pointing at `docker-compose.prod.yml`.
+2. Coolify: copy the app's **deploy webhook** URL and add it as the GitHub secret `COOLIFY_WEBHOOK_URL` (optional `COOLIFY_API_TOKEN` if you use the API-style webhook).
+3. Make sure the repo's GHCR packages (`windiq-frontend`, `windiq-backend`) are visible to Coolify — public packages pull anonymously, private ones need a registry credential.
+
+Rollback: in `docker-compose.prod.yml`, pin the image tags to `sha-<commit>` and redeploy.
+
 ## Structure
 
 ```

@@ -1,0 +1,33 @@
+# Production compose — used by Coolify on the VPS.
+#
+# Unlike docker-compose.yml, no `build:` sections: images come pre-built
+# from GHCR (see .github/workflows/deploy.yml). Pin `sha-<commit>` tags to roll back.
+name: windiq
+
+services:
+  # FastAPI backend — internal only, reachable via nginx's /api reverse proxy
+  backend:
+    image: ghcr.io/leweohlsen/windiq-backend:latest
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # React build served by nginx — the single entrypoint from the host
+  frontend:
+    image: ghcr.io/leweohlsen/windiq-frontend:latest
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
