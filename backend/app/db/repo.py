@@ -119,27 +119,142 @@ async def latest_measurement(session: AsyncSession) -> Optional[Any]:
 
 
 async def aep_trailing_12m(session: AsyncSession) -> dict[str, Any]:
-    """AEP gross (kWh) and usable hours over the trailing 12 months."""
-    result = await session.execute(text("""
-        SELECT COALESCE(SUM(energy_kwh), 0)   AS aep_gross_kwh,
-               COUNT(*)                       AS usable_hours,
-               MIN(timestamp)                 AS window_start,
-               MAX(timestamp)                 AS window_end
-          FROM hourly_energy
-         WHERE timestamp >= now() - interval '12 months'
+    """AEP gross (kWh) and usable hours over the trailing 12 months.
+
+    Same set-based speed→power layering as the daily series — the views do
+    power interpolation per row, which dominated the endpoint's runtime.
+    """
+    result = await session.execute(text(f"""
+        WITH {_CURVE_PTS_SQL}
+        , hourly AS (
+            SELECT m.timestamp,
+                   m.wind_speed_ms * POWER(t.hub_height_m
+                                           / mast.measurement_height_m,
+                                           s.shear_exponent) AS speed_hub_ms
+              FROM measurements m
+              JOIN mast  ON mast.id = m.mast_id
+              CROSS JOIN turbine t
+              CROSS JOIN site s
+             WHERE m.quality = 'ok'
+               AND m.timestamp >= now() - interval '12 months'
+        ), {_CURVE_SPEEDS_SQL}
+        SELECT COALESCE(SUM(COALESCE(p.power_kw, 0)), 0) AS aep_gross_kwh,
+               COUNT(*)                                  AS usable_hours,
+               MIN(h.timestamp)                          AS window_start,
+               MAX(h.timestamp)                          AS window_end
+          FROM hourly h
+          LEFT JOIN speeds p ON p.speed_hub_ms = h.speed_hub_ms
     """))
     return dict(result.mappings().one())
+
+
+# --- energy-series SQL layers ----------------------------------------------
+# Shared curve/how-the-power-is-built layers, assembled into single-statement
+# queries (one round trip is what keeps them fast). Query-specific layers
+# (hourly row shape, per-day rollup) stay next to their function.
+#
+#   pts     — the power curve as line segments [ws_prev, ws] → linear in between
+#   speeds  — interpolated power per DISTINCT hub speed (1599 of ~8600 rows);
+#             per-row interpolation via power_at() dominated runtime before
+
+# Segment table for the linear interpolation, identical to power_at()'s inner
+# window; combined with the speed guard in the join it IS power_at(), set-based.
+_CURVE_PTS_SQL = """
+    pts AS (
+        SELECT wind_speed_ms AS ws, power_kw AS kw,
+               LAG(wind_speed_ms) OVER (ORDER BY wind_speed_ms) AS ws_prev,
+               LAG(power_kw)      OVER (ORDER BY wind_speed_ms) AS kw_prev
+          FROM power_curve_points
+    )
+"""
+
+# Speed → power lookup, one interpolation per distinct hub speed. The DISTINCT
+# ON tie-break (lowest segment start) matches power_at()'s ORDER/LIMIT, so the
+# two produce identical numbers. Speeds off the curve have no segment and stay
+# NULL — power_at() maps them to 0, hence the COALESCE on consumption.
+# Reads from a CTE named `hourly`; must be listed after it in the WITH.
+_CURVE_SPEEDS_SQL = """
+    speeds AS (
+        SELECT DISTINCT ON (d.speed_hub_ms)
+               d.speed_hub_ms,
+               dt.kw_prev + (dt.kw - dt.kw_prev)
+                          * (d.speed_hub_ms - dt.ws_prev) / (dt.ws - dt.ws_prev) AS power_kw
+          FROM (SELECT DISTINCT speed_hub_ms FROM hourly) d
+          JOIN pts dt
+            ON dt.ws_prev IS NOT NULL
+           AND dt.ws_prev <= d.speed_hub_ms
+           AND dt.ws      >= d.speed_hub_ms
+         ORDER BY d.speed_hub_ms, dt.ws
+    )
+"""
+
+# --- daily-series SQL layers -----------------------------------------------
+#   hourly  — ok measurement rows with hub-height speed (heavier view logic,
+#             kept date-filtered here so the curve math runs on window data only)
+#   ok      — one row per day: energy, hour count, mean/max mast speed
+
+# Ok-hour rows: date, raw mast speed, and mast speed re-scaled to hub height
+# (shear-exponent profile from measurement height to hub height).
+_DAILY_HOURLY_SQL = """
+    hourly AS (
+        SELECT (m.timestamp AT TIME ZONE 'UTC')::date AS day,
+               m.wind_speed_ms AS speed_mast_ms,
+               m.wind_speed_ms * POWER(t.hub_height_m
+                                       / mast.measurement_height_m,
+                                       s.shear_exponent) AS speed_hub_ms
+          FROM measurements m
+          JOIN mast  ON mast.id = m.mast_id
+          CROSS JOIN turbine t
+          CROSS JOIN site s
+         WHERE m.quality = 'ok'
+           AND (m.timestamp AT TIME ZONE 'UTC')::date
+               >= (now() - make_interval(days => :days))::date
+    )
+"""
+
+# Speed → power lookup, one interpolation per distinct hub speed. The DISTINCT
+# ON tie-break (lowest segment start) matches power_at()'s ORDER/LIMIT, so the
+# two produce identical numbers. Speeds off the curve have no segment and stay
+# NULL — power_at() maps them to 0, hence the COALESCE on consumption.
+_DAILY_SPEEDS_SQL = """
+    speeds AS (
+        SELECT DISTINCT ON (d.speed_hub_ms)
+               d.speed_hub_ms,
+               dt.kw_prev + (dt.kw - dt.kw_prev)
+                          * (d.speed_hub_ms - dt.ws_prev) / (dt.ws - dt.ws_prev) AS power_kw
+          FROM (SELECT DISTINCT speed_hub_ms FROM hourly) d
+          JOIN pts dt
+            ON dt.ws_prev IS NOT NULL
+           AND dt.ws_prev <= d.speed_hub_ms
+           AND dt.ws      >= d.speed_hub_ms
+         ORDER BY d.speed_hub_ms, dt.ws
+    )
+"""
+
+# Per-day energy rollup over the ok hours.
+_DAILY_OK_SQL = """
+    ok AS (
+        SELECT h.day,
+               SUM(COALESCE(p.power_kw, 0)) AS energy_kwh,
+               COUNT(*)                     AS hours,
+               AVG(h.speed_mast_ms)         AS mean_wind_ms,
+               MAX(h.speed_mast_ms)         AS max_wind_ms
+          FROM hourly h
+          LEFT JOIN speeds p ON p.speed_hub_ms = h.speed_hub_ms
+         GROUP BY 1
+    )
+"""
 
 
 async def daily_series(session: AsyncSession, days: int = 90) -> list[dict]:
     """Per-day energy + QC counts, so the SPA can color bars without a 2nd call.
 
-    `suspect_hours`/`missing_hours` count defective rows of that day (missing
-    = sentinel rows and malformed rows combined). Days without any ok hours
-    appear with NULL energy instead of dropping out — the SPA draws them as a
-    gap. `mean_wind_ms` is the ok-hour mean, weighted by per-mast day rows.
+    Assembled from the layer fragments above into a single statement. Missing/
+    malformed/suspect rows count as `suspect_hours`/`missing_hours`; days
+    without any ok hour appear with NULL energy — the SPA draws them as a gap.
     """
-    result = await session.execute(text("""
+    result = await session.execute(
+        text(f"""
         WITH qc AS (
             SELECT (timestamp AT TIME ZONE 'UTC')::date AS day,
                    COUNT(*) FILTER (WHERE quality = 'suspect')                 AS suspect_hours,
@@ -147,23 +262,14 @@ async def daily_series(session: AsyncSession, days: int = 90) -> list[dict]:
               FROM measurements
              WHERE timestamp >= now() - make_interval(days => :days)
              GROUP BY 1
-        ), ok AS (
-            SELECT day,
-                   SUM(energy_kwh) AS energy_kwh,
-                   SUM(hours)      AS hours,
-                   CASE WHEN SUM(hours) > 0
-                        THEN SUM(mean_wind_ms * hours) / SUM(hours) END AS mean_wind_ms,
-                   MAX(max_wind_ms) AS max_wind_ms
-              FROM daily_energy
-             WHERE day >= (now() - make_interval(days => :days))::date
-             GROUP BY 1
-        )
+        ), {_CURVE_PTS_SQL}, {_DAILY_HOURLY_SQL}, {_CURVE_SPEEDS_SQL}, {_DAILY_OK_SQL}
         SELECT o.day, o.energy_kwh, o.hours, o.mean_wind_ms, o.max_wind_ms,
                COALESCE(q.suspect_hours, 0) AS suspect_hours,
                COALESCE(q.missing_hours, 0) AS missing_hours
           FROM ok o
           LEFT JOIN qc q USING (day)
         UNION ALL
+        -- qc-only days (no ok hour): surface them as gaps instead of dropping
         SELECT q.day, NULL, NULL, NULL, NULL, q.suspect_hours, q.missing_hours
           FROM qc q
          WHERE NOT EXISTS (SELECT 1 FROM ok o WHERE o.day = q.day)
@@ -260,6 +366,12 @@ async def wind_rose(session: AsyncSession, days: int = ROSE_WINDOW_DAYS) -> list
 WINDOW_MIN_HISTORY_DAYS = 350
 WINDOW_FRESH_HOURS = 48
 
+_INGEST_RUN_COLS = """
+       id, started_at, finished_at, status, pages, inserted, updated,
+       frame_from, frame_to, qc_missing, qc_suspect, qc_malformed,
+       max_gap_hours, detail
+"""
+
 
 async def ingest_window_covered(session: AsyncSession) -> bool:
     """True when the store already reflects a complete ingest.
@@ -285,10 +397,8 @@ async def ingest_window_covered(session: AsyncSession) -> bool:
 
 async def ingest_runs_recent(session: AsyncSession, limit: int = 10) -> list[dict]:
     """Last N ingest runs, newest first (dashboard history table)."""
-    result = await session.execute(text("""
-        SELECT id, started_at, finished_at, status, pages, inserted, updated,
-               frame_from, frame_to, qc_missing, qc_suspect, qc_malformed,
-               max_gap_hours, detail
+    result = await session.execute(text(f"""
+        SELECT {_INGEST_RUN_COLS}
           FROM ingest_runs ORDER BY id DESC LIMIT :limit
     """), {"limit": limit})
     return [dict(row) for row in result.mappings().all()]
@@ -296,10 +406,8 @@ async def ingest_runs_recent(session: AsyncSession, limit: int = 10) -> list[dic
 
 async def ingest_health(session: AsyncSession) -> dict[str, Any]:
     """Last ingest run + measurement staleness, feeding /api/health."""
-    last_run = (await session.execute(text("""
-        SELECT id, started_at, finished_at, status, pages, inserted, updated,
-               frame_from, frame_to, qc_missing, qc_suspect, qc_malformed,
-               max_gap_hours, detail
+    last_run = (await session.execute(text(f"""
+        SELECT {_INGEST_RUN_COLS}
           FROM ingest_runs ORDER BY id DESC LIMIT 1
     """))).mappings().first()
     staleness = (await session.execute(text("""
