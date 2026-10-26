@@ -16,12 +16,15 @@ DATABASE_URL = os.getenv(
 )
 
 # Small pool: one API consumer (the SPA) and one ingest worker.
+# JIT is off: dashboard queries are tiny, and Postgres spends more time
+# compiling those plan functions (~900 ms measured) than running them.
 engine: AsyncEngine = create_async_engine(
     DATABASE_URL,
     pool_size=2,
     max_overflow=3,
     pool_pre_ping=True,
     pool_recycle=1800,
+    connect_args={"server_settings": {"jit": "off"}},
 )
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
