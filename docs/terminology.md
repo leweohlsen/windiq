@@ -11,7 +11,7 @@ The backend (code, API fields, DB) stays **English**; the frontend presents in
 - **Domain** — standard German wind-energy usage, for terms the PDF does not name.
 
 Rule of thumb: translate what the user reads; keep technical loanwords that are
-standard in German tech language (AEP, P50/P90, Ingest, QC, m/s, kWh/MWh/GWh).
+standard in German tech language (AEP, P50/P90, Ingest, QC, m/s, kWh/MWh).
 
 ## 1. Domain terms (PDF vocabulary)
 
@@ -117,7 +117,7 @@ translated in data**, only in labels:
 | DataStatus | Data age: / (stale) | Datenalter: / (veraltet) |
 | DataStatus | Coverage: 98.2% (… of … h) | Abdeckung: 98,2 % (… von … h) |
 | DataStatus | QC totals: … absent · … missing · … suspect · … malformed | QC-Statistik: … nicht geliefert · … ohne Wert · … verdächtig · … fehlerhaft |
-| DataStatus | Max gap: … h within the stored range | Maximale Lücke: … h innerhalb des gespeicherten Zeitraums |
+| DataStatus | Max gap: … h within the trailing 12 months | Maximale Lücke: … h innerhalb der letzten 12 Monate |
 | DataStatus | Queueing failed — retry later. | Einreihung fehlgeschlagen — bitte später erneut versuchen. |
 | IngestHistory | Started / Status / Duration / Pages | Gestartet / Status / Dauer / Seiten |
 | IngestHistory | Rows (ins/upd) | Zeilen (neu/geändert) |
@@ -132,14 +132,14 @@ translated in data**, only in labels:
 
 ## 6. Formatting conventions
 
-- Numbers: `de-DE` locale (decimal comma, `.` thousands) — `asGWh`, `asMWh`,
+- Numbers: `de-DE` locale (decimal comma, `.` thousands) — `asMWh`,
   `asMs`, `asPercent`, `asHours` switch to `Intl.NumberFormat("de-DE")`.
   Percent sign with a space: `98,2 %`.
 - Dates: `de-DE` — `25.10.2026`; datetimes `25.10.2026, 14:00`.
   Replaces the hardcoded `en-US` in `format.ts` (`asDate`, `asClock`),
   `DailyChart` tooltip and `WindPanel` X-axis.
-- Units stay as-is: `m/s`, `kWh`, `MWh`, `GWh`, `h` (GWh for the annual AEP is
-  the PDF's "in MWh" scaled up for readability; conversions are exact).
+- Units: `m/s`, `kWh`, `MWh`, `h`. Annual values (AEP brutto/netto, P50, P90) are shown
+  in MWh, as the PDF specifies.
 
 ## 7. Decisions to keep in mind
 

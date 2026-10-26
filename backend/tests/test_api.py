@@ -9,6 +9,7 @@ from datetime import timedelta
 import pytest
 
 import app.api as api_mod
+import app.main as main_mod
 from app.api import revenue_chain
 from app.db import repo
 
@@ -157,3 +158,15 @@ async def test_runs_endpoint_newest_first_and_limit_cap(db, clean, hour):
         )
     await db.commit()
     assert len(await api_mod.ingest_runs(100)) == 50
+
+
+async def test_health_is_200_when_database_is_up(db):
+    assert (await main_mod.health()).status_code == 200
+
+
+async def test_health_is_503_when_database_is_down(monkeypatch):
+    async def unreachable() -> bool:
+        return False
+
+    monkeypatch.setattr(main_mod, "db_ping", unreachable)
+    assert (await main_mod.health()).status_code == 503

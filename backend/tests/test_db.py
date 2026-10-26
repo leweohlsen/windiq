@@ -165,6 +165,19 @@ async def test_daily_series_and_coverage(db, clean, reference, measurement_row, 
     assert coverage["max_gap_hours"] == 44    # 45 h between the day neighbours
 
 
+async def test_coverage_ignores_rows_older_than_twelve_months(
+    db, clean, reference, measurement_row, hour
+):
+    await repo.upsert_measurements(db, [
+        measurement_row(hour - timedelta(days=400), 8.0),
+        measurement_row(hour, 8.0),
+    ])
+    coverage = await repo.coverage(db)
+    assert coverage["total_hours"] == 1
+    assert coverage["expected_hours"] == 1
+    assert coverage["max_gap_hours"] == 0
+
+
 async def test_wind_series_trailing_window(db, clean, reference, measurement_row, hour):
     t0 = hour
     await repo.upsert_measurements(db, [

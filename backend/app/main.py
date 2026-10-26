@@ -64,7 +64,8 @@ async def health() -> JSONResponse:
             "time": datetime.now(timezone.utc).isoformat(),
             "last_run_status": ingest_db.get("status"),
             "last_data_update": _iso(last_data_update),
-        }
+        },
+        status_code=200 if db_ok else 503,
     )
 
 

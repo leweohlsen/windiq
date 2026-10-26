@@ -168,9 +168,10 @@ async def daily_series(session: AsyncSession, days: int = 90) -> list[dict]:
 async def coverage(session: AsyncSession) -> dict[str, Any]:
     """Measurement range, expected/absent hours, QC row splits, max gap.
 
-    Hour classes are counted by stored quality; `absent_hours` are the hours
-    of the covered span with no row at all; `max_gap_hours` is the largest
-    consecutive hole across the whole stored window.
+    Limited to the trailing 12 months, the same window as AEP, so the coverage
+    describes the hours the yield is built from. Hour classes are counted by
+    stored quality; `absent_hours` are the hours of the covered span with no
+    row at all; `max_gap_hours` is the largest consecutive hole in the window.
     """
     result = await session.execute(text("""
         SELECT MIN(timestamp)  AS from_ts,
@@ -187,9 +188,11 @@ async def coverage(session: AsyncSession) -> dict[str, Any]:
                            FROM (SELECT EXTRACT(EPOCH FROM timestamp
                                                  - LAG(timestamp) OVER (ORDER BY timestamp))
                                         / 3600.0 - 1 AS gap
-                                   FROM measurements) AS gaps), 0)::int
+                                   FROM measurements
+                                   WHERE timestamp >= now() - interval '12 months') AS gaps), 0)::int
                                                               AS max_gap_hours
           FROM measurements
+         WHERE timestamp >= now() - interval '12 months'
     """))
     row = dict(result.mappings().one())
     row["expected_hours"] = int(row["expected_hours"])

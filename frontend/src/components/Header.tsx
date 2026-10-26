@@ -1,7 +1,7 @@
-/** Header — two stat cards (P50/P90, GWh) plus gross/net AEP, measurement
+/** Header — two stat cards (P50/P90, MWh) plus gross/net AEP, measurement
  * range, usable vs. expected hours and the site metadata line (plan phase 4). */
 import type { Metrics } from "../api";
-import { asDateRange, asGWh, asHours, asPercent } from "../format";
+import { asDateRange, asHours, asMWh, asPercent } from "../format";
 
 export function Header({ metrics }: { metrics: Metrics }) {
   const { aep, coverage, site, turbine, mast } = metrics;
@@ -21,22 +21,22 @@ export function Header({ metrics }: { metrics: Metrics }) {
       <div className="cards">
         <div className="card stat">
           <span className="label">P50 · letzte 12 Monate</span>
-          <span className="value">{asGWh(aep.p50_kwh)} GWh</span>
+          <span className="value">{asMWh(aep.p50_kwh, 0)} MWh</span>
         </div>
         <div className="card stat">
           <span className="label">P90 · letzte 12 Monate</span>
-          <span className="value">{asGWh(aep.p90_kwh)} GWh</span>
+          <span className="value">{asMWh(aep.p90_kwh, 0)} MWh</span>
         </div>
       </div>
 
       <div className="cards">
         <div className="card">
           <span className="label">AEP brutto</span>
-          <span className="value small">{asGWh(aep.gross_kwh)} GWh</span>
+          <span className="value small">{asMWh(aep.gross_kwh, 0)} MWh</span>
         </div>
         <div className="card">
           <span className="label">AEP netto</span>
-          <span className="value small">{asGWh(aep.net_kwh)} GWh</span>
+          <span className="value small">{asMWh(aep.net_kwh, 0)} MWh</span>
         </div>
         <div className="card">
           <span className="label">Messzeitraum</span>

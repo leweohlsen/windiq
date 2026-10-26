@@ -120,8 +120,8 @@ export function DataStatus({
             {asHours(coverage.malformed_hours)} fehlerhaft
           </li>
           <li>
-            Maximale Lücke: {asHours(coverage.max_gap_hours)} h innerhalb des
-            gespeicherten Zeitraums
+            Maximale Lücke: {asHours(coverage.max_gap_hours)} h innerhalb der
+            letzten 12 Monate
           </li>
         </ul>
       </div>

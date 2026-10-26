@@ -273,7 +273,7 @@ hand-computed sector count.
 Recharts for all charts; plain CSS/component layout, no CSS framework. Six panels
 (signed off in the 2026-10-25 dashboard review):
 
-- **Header** — two stat cards **P50** and **P90** (GWh); plus gross/net AEP,
+- **Header** — two stat cards **P50** and **P90** (MWh); plus gross/net AEP,
   measurement range, usable vs. expected hours, site metadata
 - **Daily chart** — `ComposedChart`: bars = daily energy (MWh), line = mean wind
   (m/s) on a second y-axis, tooltip shows hours + QC counts; per-bar QC coloring
@@ -293,7 +293,7 @@ Recharts for all charts; plain CSS/component layout, no CSS framework. Six panel
 - data fetching: one polling hook fetches all four GETs in parallel every 60 s
   (paused when `document.hidden`), plus a manual refresh button; per-panel
   loading/error states
-- units: fixed — daily → MWh, yearly (AEP/P50/P90) → GWh, fixed decimals
+- units: fixed — energies (daily and yearly AEP/P50/P90) → MWh, fixed decimals
 - if the budget runs tight, cut here (in order): rose → plain frequency table
   (~30 min saved), methodology → one static paragraph (~15 min)
 

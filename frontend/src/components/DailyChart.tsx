@@ -39,12 +39,8 @@ export function DailyChart({
   onRangeChange: (days: number) => void;
 }) {
   const chartData = daily.map((point) => ({
-    day: point.day,
+    ...point,
     energy_mwh: point.energy_kwh == null ? null : point.energy_kwh / 1000,
-    mean_wind_ms: point.mean_wind_ms,
-    suspect_hours: point.suspect_hours,
-    missing_hours: point.missing_hours,
-    hours: point.hours,
   }));
 
   return (

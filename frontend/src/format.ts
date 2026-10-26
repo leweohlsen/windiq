@@ -1,6 +1,6 @@
 /** Shared display formatting — German presentation per docs/terminology.md:
  * de-DE numbers (decimal comma), dates and datetimes; units stay m/s, kWh,
- * MWh, GWh, h, d (valid unit symbols in German). */
+ * MWh, h, d (valid unit symbols in German). */
 
 const nf = (decimals: number) =>
   new Intl.NumberFormat("de-DE", {
@@ -8,11 +8,7 @@ const nf = (decimals: number) =>
     maximumFractionDigits: decimals,
   });
 
-/** Trailing 12 months → GWh, fixed decimals. */
-export const asGWh = (kwh: number | null, decimals = 2) =>
-  kwh == null ? "–" : nf(decimals).format(kwh / 1e6);
-
-/** Daily energies → MWh, fixed decimals. */
+/** Energies (daily and yearly) → MWh, fixed decimals. */
 export const asMWh = (kwh: number | null, decimals = 1) =>
   kwh == null ? "–" : nf(decimals).format(kwh / 1000);
 
