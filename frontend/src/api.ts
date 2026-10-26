@@ -1,4 +1,6 @@
-/** Typed access to the backend dashboard API (see backend/app/api.py). */
+/** Typed access to the backend dashboard API. Types are generated from the
+ * FastAPI OpenAPI spec (`npm run generate:api` → src/api/schema.d.ts). */
+import type { components, operations } from "./api/schema";
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -16,124 +18,24 @@ async function post(url: string): Promise<Record<string, unknown>> {
   return (await response.json()) as Record<string, unknown>;
 }
 
-export interface AepChain {
-  gross_kwh: number;
-  net_kwh: number | null;
-  p50_kwh: number | null;
-  p90_kwh: number | null;
-  window_start: string | null;
-  window_end: string | null;
-  usable_hours: number;
-}
+/** The backend serializes every response field (nulls included), but pydantic
+ * field defaults mark them optional in the spec — strip the phantom undefined. */
+type Payload<T> = { [K in keyof T]-?: PayloadField<T[K]> };
+type PayloadField<V> = PayloadValue<Exclude<V, undefined>>;
+type PayloadValue<W> = W extends (infer U)[] ? Payload<U>[] : W extends object ? Payload<W> : W;
 
-export interface Coverage {
-  from_ts: string | null;
-  to_ts: string | null;
-  total_hours: number;
-  usable_hours: number;
-  suspect_hours: number;
-  missing_hours: number;
-  malformed_hours: number;
-  expected_hours: number;
-  absent_hours: number;
-  max_gap_hours: number | null;
-}
+export type Metrics = Payload<components["schemas"]["MetricsOut"]>;
+export type DailyPoint = Payload<components["schemas"]["DailyPointOut"]>;
+export type WindResponse = Payload<components["schemas"]["WindOut"]>;
+export type IngestRun = Payload<components["schemas"]["IngestRunOut"]>;
+export type TurbineDetail = Payload<components["schemas"]["TurbineDetailOut"]>;
+export type PowerCurvePoint = Payload<components["schemas"]["PowerCurvePointOut"]>;
+export type RoseSector = Payload<components["schemas"]["RoseSectorOut"]>;
 
-export interface SiteInfo {
-  name: string;
-  shear_exponent: number;
-  availability_loss: number;
-  electrical_loss: number;
-  wake_loss: number;
-  uncertainty: number;
-}
-
-export interface TurbineInfo {
-  name: string;
-  rated_power_kw: number;
-  hub_height_m: number;
-  rotor_diameter_m: number;
-}
-
-export interface PowerCurvePoint {
-  wind_speed_ms: number;
-  power_kw: number;
-}
-
-export interface TurbineDetail {
-  name: string;
-  rated_power_kw: number;
-  hub_height_m: number;
-  rotor_diameter_m: number;
-  cut_in_wind_speed_ms: number;
-  cut_out_wind_speed_ms: number;
-  power_curve: PowerCurvePoint[];
-}
-
-export interface MastInfo {
-  name: string;
-  measurement_height_m: number;
-}
-
-export interface IngestRun {
-  id: number;
-  started_at: string;
-  finished_at: string | null;
-  status: string;
-  pages: number;
-  inserted: number;
-  updated: number;
-  frame_from: string | null;
-  frame_to: string | null;
-  qc_missing: number;
-  qc_suspect: number;
-  qc_malformed: number;
-  max_gap_hours: number | null;
-  detail: string | null;
-}
-
-export interface Metrics {
-  aep: AepChain;
-  coverage: Coverage;
-  site: SiteInfo | null;
-  turbine: TurbineInfo | null;
-  mast: MastInfo | null;
-  staleness: {
-    last_run: IngestRun | null;
-    data_age_seconds: number | null;
-  };
-}
-
-export interface DailyPoint {
-  day: string;
-  /** NULL → day without any ok hours (gap); the SPA draws it as absent. */
-  energy_kwh: number | null;
-  hours: number | null;
-  mean_wind_ms: number | null;
-  max_wind_ms: number | null;
-  suspect_hours: number;
-  /** sentinel + malformed rows of that day ("no usable data" hours) */
-  missing_hours: number;
-}
-
-export interface WindPoint {
-  timestamp: string;
-  wind_speed_ms: number;
-  wind_dir_deg: number;
-}
-
-export interface RoseSector {
-  direction: string;
-  degrees: number;
-  frequency: number;
-  mean_speed_ms: number | null;
-}
-
-export interface WindResponse {
-  hours: number;
-  series: WindPoint[];
-  rose: RoseSector[];
-}
+type IngestQuery = NonNullable<
+  operations["queue_ingest_api_ingest_run_post"]["parameters"]["query"]
+>;
+export type IngestMode = NonNullable<IngestQuery["mode"]>;
 
 export function fetchMetrics(): Promise<Metrics> {
   return getJson<Metrics>("/api/metrics");
@@ -154,8 +56,6 @@ export function fetchRuns(limit: number = 10): Promise<IngestRun[]> {
 export function fetchTurbine(): Promise<TurbineDetail | null> {
   return getJson<TurbineDetail | null>("/api/turbine");
 }
-
-export type IngestMode = "sync" | "backfill";
 
 export async function postIngestRun(mode: IngestMode): Promise<boolean> {
   const body = await post(`/api/ingest/run?mode=${mode}`);
