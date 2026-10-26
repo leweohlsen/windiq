@@ -3,8 +3,8 @@
 Status: 2026-10-25 · Phases 1–4 complete (persistence, ingest worker, API,
 SPA dashboard — acceptance criteria verified, incl. a live-data smoke);
 phase 5 (operations & observability) implemented 2026-10-26 (startup sweep,
-backfill gate, run-id logs, README ops notes).
-Budget per case study: 5.25–6 h (phases 3/4 grew in the dashboard review),
+backfill gate, run-id logs, ops notes in operations.md).
+Budget per assignment: 5.25–6 h (phases 3/4 grew in the dashboard review),
 spread over 7 days
 Data-basis freshness: quirks re-verified on 2026-10-25 → [api-measurements-quirks.md](api-measurements-quirks.md)
 
@@ -24,7 +24,7 @@ WindIQ API ──cursor pagination──▶ Ingest worker (taskiq) ──upsert�
 
 ## Architecture decisions
 
-Summary only; rationale and history are tracked in README.md → §Decisions.
+Summary only; rationale and history are tracked in [decisions.md](decisions.md).
 
 | Topic | Choice |
 | --- | --- |
@@ -36,7 +36,7 @@ Summary only; rationale and history are tracked in README.md → §Decisions.
 | Aggregation | Plain SQL views, no materialized rollups (~8.7k rows/year) |
 | Ingest trigger | taskiq + `taskiq-pg` (Postgres doubles as broker, no Redis); separate `worker` + `scheduler` containers; cron `*/5` plus on-demand `POST /api/ingest/run` |
 
-All of these are grounded in the live data exploration (README.md → §Data findings).
+All of these are grounded in the live data exploration ([api-measurements-quirks.md](api-measurements-quirks.md)).
 
 ## Phase 1 — Persistence layer (~1 h) — done 2026-10-25
 
@@ -226,7 +226,7 @@ the API window slides, so any count asserted today drifts within a month; quirks
   - site/turbine/mast metadata (names, heights, α/availability/electrical/wake
     losses, uncertainty) — powers the header metadata and the methodology blurb
   - staleness of the last ingest (`data_age`, last run status)
-  - formulas (per case study), computed in Python from the DB site parameters:
+  - formulas (per assignment), computed in Python from the DB site parameters:
     `v_hub = v_mast · (h_hub / h_mast)^α` · AEP gross = Σ power_at(v_hub) over 12 months
     · AEP net = gross × (1−availability) × (1−electrical) × (1−wake)
     · P50 = net · P90 = P50 × (1 − 1.282 × U)
@@ -327,7 +327,7 @@ works; all six panels render sensibly also with empty/degraded data.
 - taskiq-pg hygiene from the findings below: worker-startup sweep of stale
   `taskiq_messages` rows (finding 1) + gate the startup backfill on covered
   windows (finding 2)
-- README ops notes: "sync now" semantics during worker downtime (badge clears
+- ops notes: "sync now" semantics during worker downtime (badge clears
   with the next newer run after recovery — finding 3) and the pg_dump recipe
 - keep the Coolify pipeline as is (CI builds images, deploy webhook pulls); do **not**
   drop the `db` volume during rebuilds
@@ -359,7 +359,7 @@ works; all six panels render sensibly also with empty/degraded data.
 3. **"Sync now" with the worker down**: POST returns `{queued: true}`, the
    optimistic badge persists until the next poll shows *any* newer run — i.e.
    ≤ 5 min after the worker returns (cron compensates). Document this
-   expectation in the README together with the sweep; staleness + max-gap
+   expectation in operations.md together with the sweep; staleness + max-gap
    remain the outage signal (finding 1 explains why the queued task itself
    never runs).
 

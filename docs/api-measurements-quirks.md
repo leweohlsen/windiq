@@ -1,7 +1,7 @@
 # WindIQ Measurements-API — Quirks (data quality findings)
 
 Status: re-probe 2026-10-25 (fresh full pull over the client facade `app/windiq/client.py`),
-supersedes the approximate numbers in README §Findings. **The API serves a sliding 1-year
+supersedes the approximate numbers of the first exploration. **The API serves a sliding 1-year
 window**, so every count below will drift — treat them as shapes and patterns, not constants.
 
 Data basis of the re-probe: 18 pages · 8,704 rows received · 8,685 distinct UTC hours ·

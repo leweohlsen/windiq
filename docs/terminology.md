@@ -3,36 +3,36 @@
 The backend (code, API fields, DB) stays **English**; the frontend presents in
 **German**. This document is the binding mapping between the two. Sources:
 
-- **PDF** — `WindIQ_Case_Study_Ohlsen.pdf`, section "So wird der Ertrag berechnet"
+- **Vorgabe** — the project assignment: section "So wird der Ertrag berechnet"
   and the endpoint table (authoritative for domain terms).
 - **API** — German field descriptions shipped in the generated client
   (`wind_iq_measurement_api_client`), e.g. "Höhenexponent α für die
   Höhenumrechnung".
-- **Domain** — standard German wind-energy usage, for terms the PDF does not name.
+- **Domain** — standard German wind-energy usage, for terms the assignment does not name.
 
 Rule of thumb: translate what the user reads; keep technical loanwords that are
 standard in German tech language (AEP, P50/P90, Ingest, QC, m/s, kWh/MWh).
 
-## 1. Domain terms (PDF vocabulary)
+## 1. Domain terms (assignment vocabulary)
 
 | Backend / API (EN) | UI (DE) | Source | Note |
 |---|---|---|---|
-| site | Standort | PDF | |
-| mast / measurement mast | Messmast | PDF | |
-| measurement height | Messhöhe | PDF | |
-| turbine | Windenergieanlage | PDF | |
-| hub height | Nabenhöhe | PDF | |
-| shear exponent α | Windgradient α | PDF | PDF endpoint table says "Windgradient"; API client says "Höhenexponent α". Use **Windgradient (Höhenexponent) α** in the methodology table — see §6 |
-| power curve | Leistungskennlinie | PDF | |
-| measurements | Messwerte | PDF | |
-| AEP gross | AEP brutto | PDF | |
-| AEP net | AEP netto | PDF | |
-| availability loss | Verfügbarkeitsverlust | PDF ("Verfügbarkeit") | |
-| electrical loss | elektrische Verluste | PDF ("elektrisch") | |
-| wake loss | Abschattungsverlust | PDF ("Abschattung") | Standard wind term would be "Nachlaufverlust", but the PDF defines this factor as "Abschattung" — follow the PDF |
-| uncertainty U | Unsicherheit U | PDF | |
-| P50 / P90 | P50 / P90 | PDF | untranslated |
-| annual energy yield / revenue | Ertrag / Jahresertrag | PDF | "Live-Ertragsrechnung" is the PDF's name for the whole app |
+| site | Standort | Vorgabe | |
+| mast / measurement mast | Messmast | Vorgabe | |
+| measurement height | Messhöhe | Vorgabe | |
+| turbine | Windenergieanlage | Vorgabe | |
+| hub height | Nabenhöhe | Vorgabe | |
+| shear exponent α | Windgradient α | Vorgabe | Vorgabe endpoint table says "Windgradient"; API client says "Höhenexponent α". Use **Windgradient (Höhenexponent) α** in the methodology table — see §6 |
+| power curve | Leistungskennlinie | Vorgabe | |
+| measurements | Messwerte | Vorgabe | |
+| AEP gross | AEP brutto | Vorgabe | |
+| AEP net | AEP netto | Vorgabe | |
+| availability loss | Verfügbarkeitsverlust | Vorgabe ("Verfügbarkeit") | |
+| electrical loss | elektrische Verluste | Vorgabe ("elektrisch") | |
+| wake loss | Abschattungsverlust | Vorgabe ("Abschattung") | Standard wind term would be "Nachlaufverlust", but the assignment defines this factor as "Abschattung" — follow the assignment |
+| uncertainty U | Unsicherheit U | Vorgabe | |
+| P50 / P90 | P50 / P90 | Vorgabe | untranslated |
+| annual energy yield / revenue | Ertrag / Jahresertrag | Vorgabe | "Live-Ertragsrechnung" is the assignment's name for the whole app |
 
 ## 2. Wind & time-series terms
 
@@ -128,7 +128,7 @@ translated in data**, only in labels:
 | Methodology | Shear exponent α | Windgradient (Höhenexponent) α |
 | Methodology | Availability loss / Electrical loss / Wake loss | Verfügbarkeitsverlust / elektrische Verluste / Abschattungsverlust |
 | Methodology | Uncertainty U / Hub height / Mast height | Unsicherheit U / Nabenhöhe / Messhöhe |
-| Methodology | methodology paragraph | text per PDF "So wird der Ertrag berechnet", keeping the formulas symbolic (v_Nabe, AEP brutto/netto, P50, P90) |
+| Methodology | methodology paragraph | text per assignment "So wird der Ertrag berechnet", keeping the formulas symbolic (v_Nabe, AEP brutto/netto, P50, P90) |
 
 ## 6. Formatting conventions
 
@@ -139,7 +139,7 @@ translated in data**, only in labels:
   Replaces the hardcoded `en-US` in `format.ts` (`asDate`, `asClock`),
   `DailyChart` tooltip and `WindPanel` X-axis.
 - Units: `m/s`, `kWh`, `MWh`, `h`. Annual values (AEP brutto/netto, P50, P90) are shown
-  in MWh, as the PDF specifies.
+  in MWh, as the assignment specifies.
 
 ## 7. Decisions to keep in mind
 
@@ -150,6 +150,6 @@ translated in data**, only in labels:
 2. **Run status pills:** backend statuses `ok` / `partial` / `error` are shown
    verbatim inside `pill-*` spans. Translate the display text only
    (ok / teilweise / Fehler) while keeping the CSS class from the raw value.
-3. **Windgradient vs. Höhenexponent:** PDF and API client disagree. UI label is
+3. **Windgradient vs. Höhenexponent:** assignment and API client disagree. UI label is
    "Windgradient (Höhenexponent) α" so both sources are recognizable; the α
    symbol disambiguates.

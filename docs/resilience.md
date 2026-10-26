@@ -175,7 +175,7 @@ manages it inside the windiq DB, outside migrations.
 - Each cycle carries a `run=<id>` marker through api/worker/scheduler logs;
   `docker compose logs` + `docker compose ps` are the debugging entry points.
 - A "sync now" queued during downtime is a known no-op (sweep) — the
-  expectation is documented in README §Betrieb.
+  expectation is documented in [operations.md](operations.md).
 
 ## Known limits
 

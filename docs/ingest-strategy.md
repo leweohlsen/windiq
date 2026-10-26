@@ -2,7 +2,7 @@
 
 Status: 2026-10-26 · expanded from [upsert-strategy.md] (original in git history)
 Code: `backend/app/ingest/`, `db/repo.py` (upserts, gate), `app/worker.py` (wiring, sweep, gate)
-Evidence: [api-measurements-quirks.md](api-measurements-quirks.md) · ops: README → §Betrieb
+Evidence: [api-measurements-quirks.md](api-measurements-quirks.md) · ops: [operations.md](operations.md)
 
 ## Overview
 
