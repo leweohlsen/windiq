@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Iterable, Optional, TypedDict
 
-from sqlalchemy import text
+from sqlalchemy import and_, or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,15 +24,21 @@ class MeasurementRow(TypedDict):
 
 
 def _upsert_stmt(model, values):
-    """INSERT … ON CONFLICT DO UPDATE guarded by `updated_at`.
+    """INSERT … ON CONFLICT DO UPDATE guarded by (updated_at, version).
 
-    Stored rows are only touched when the incoming revision is newer, so a
-    replayed backfill or a lagging sync page can never overwrite newer data.
-    `fetched_at` always keeps its DB default (it tracks *our* reads).
+    Stored rows are only touched when the incoming revision is newer —
+    compared lexicographically, so a same-timestamp republish with a higher
+    version is not dropped and a replayed backfill or lagging sync page can
+    never overwrite newer data. Every guarded model pairs `updated_at` with
+    `version`. `fetched_at` always keeps its DB default (it tracks *our*
+    reads).
     """
     stmt = pg_insert(model).values(values)
-    kwargs = {"where": model.updated_at < stmt.excluded.updated_at} \
-        if hasattr(model, "updated_at") else {}
+    kwargs = {"where": or_(
+        model.updated_at < stmt.excluded.updated_at,
+        and_(model.updated_at == stmt.excluded.updated_at,
+             model.version < stmt.excluded.version),
+    )} if hasattr(model, "updated_at") else {}
     return stmt.on_conflict_do_update(
         index_elements=[c.name for c in model.__table__.primary_key.columns],
         set_={c.name: stmt.excluded[c.name]
@@ -46,17 +52,18 @@ async def upsert_measurements(
 ) -> tuple[int, int]:
     """Idempotent batched upsert; latest revision wins. Returns (inserted, updated).
 
-    Rows whose stored `updated_at` is not older than the incoming one are
-    skipped entirely — they count as neither inserted nor updated. Rows
-    colliding within one batch (the same UTC hour reported twice) are reduced
-    to their newest revision first, since Postgres forbids touching a conflict
-    row twice in one statement.
+    Rows whose stored (updated_at, version) is not older than the incoming
+    one are skipped entirely — they count as neither inserted nor updated.
+    Rows colliding within one batch (the same UTC hour reported twice) are
+    reduced to their newest revision first, since Postgres forbids touching
+    a conflict row twice in one statement.
     """
     keyed: dict[tuple[str, datetime], MeasurementRow] = {}
     for row in rows:
         key = (row["mast_id"], row["timestamp"])
         previous = keyed.get(key)
-        if previous is None or row["updated_at"] >= previous["updated_at"]:
+        if previous is None or (row["updated_at"], row["version"]) >= \
+                (previous["updated_at"], previous["version"]):
             keyed[key] = row
     rows = list(keyed.values())
     inserted = updated = 0

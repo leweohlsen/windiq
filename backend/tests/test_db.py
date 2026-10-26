@@ -49,10 +49,19 @@ async def test_upsert_precedence(db, clean, reference, measurement_row, hour):
     wind_speed_ms, version = await stored_value(db, t0)
     assert (wind_speed_ms, version) == (9.0, 2)
 
-    # exact replays change nothing
+    # equal updated_at, higher version: the tiebreak still updates
     assert await repo.upsert_measurements(
         db, [measurement_row(
-            t0, 9.0, version=2, updated_at=t0 + HOUR_LATER + timedelta(minutes=1)
+            t0, 9.5, version=3, updated_at=t0 + HOUR_LATER + timedelta(minutes=1)
+        )]
+    ) == (0, 1)
+    wind_speed_ms, version = await stored_value(db, t0)
+    assert (wind_speed_ms, version) == (9.5, 3)
+
+    # equal updated_at, equal version: an exact replay changes nothing
+    assert await repo.upsert_measurements(
+        db, [measurement_row(
+            t0, 9.5, version=3, updated_at=t0 + HOUR_LATER + timedelta(minutes=1)
         )]
     ) == (0, 0)
 
@@ -85,6 +94,15 @@ async def test_upsert_dedupes_within_batch(db, clean, reference, measurement_row
     ]
     assert await repo.upsert_measurements(db, rows) == (1, 0)
     wind_speed_ms, version = await stored_value(db, t0)
+    assert (wind_speed_ms, version) == (6.0, 2)
+
+    # equal updated_at: the version tiebreak decides, not arrival order
+    rows = [
+        measurement_row(t0 + HOUR_LATER, 6.0, version=2, updated_at=t0 + HOUR_LATER),
+        measurement_row(t0 + HOUR_LATER, 4.0, version=1, updated_at=t0 + HOUR_LATER),
+    ]
+    assert await repo.upsert_measurements(db, rows) == (1, 0)
+    wind_speed_ms, version = await stored_value(db, t0 + HOUR_LATER)
     assert (wind_speed_ms, version) == (6.0, 2)
 
 
