@@ -9,6 +9,20 @@ const metrics = {
   staleness: { last_run: null, data_age_seconds: 60 },
 };
 
+const turbine = {
+  name: "Test turbine",
+  rated_power_kw: 3600,
+  hub_height_m: 140,
+  rotor_diameter_m: 136,
+  cut_in_wind_speed_ms: 3,
+  cut_out_wind_speed_ms: 25,
+  power_curve: [
+    { wind_speed_ms: 0, power_kw: 0 },
+    { wind_speed_ms: 10, power_kw: 1800 },
+    { wind_speed_ms: 20, power_kw: 3600 },
+  ],
+};
+
 /** Shared in-memory /api for tests. Values are JSON bodies, Error instances
  * (the fetch rejects) or Promises (deferred responses). Mutate between polls
  * to simulate changed data. */
@@ -18,6 +32,7 @@ export function stubDashboardFetch() {
     "/api/daily?days=90": [{ day: "2026-10-25", energy_kwh: 1 }],
     "/api/wind?hours=48": { hours: 48, series: [], rose: [] },
     "/api/ingest/runs?limit=10": [],
+    "/api/turbine": turbine,
   };
 
   const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -39,4 +54,4 @@ export function showTab() {
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
 }
 
-export { metrics };
+export { metrics, turbine };

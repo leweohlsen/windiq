@@ -55,6 +55,21 @@ export interface TurbineInfo {
   rotor_diameter_m: number;
 }
 
+export interface PowerCurvePoint {
+  wind_speed_ms: number;
+  power_kw: number;
+}
+
+export interface TurbineDetail {
+  name: string;
+  rated_power_kw: number;
+  hub_height_m: number;
+  rotor_diameter_m: number;
+  cut_in_wind_speed_ms: number;
+  cut_out_wind_speed_ms: number;
+  power_curve: PowerCurvePoint[];
+}
+
 export interface MastInfo {
   name: string;
   measurement_height_m: number;
@@ -134,6 +149,10 @@ export function fetchWind(hours: number = 48): Promise<WindResponse> {
 
 export function fetchRuns(limit: number = 10): Promise<IngestRun[]> {
   return getJson<IngestRun[]>(`/api/ingest/runs?limit=${limit}`);
+}
+
+export function fetchTurbine(): Promise<TurbineDetail | null> {
+  return getJson<TurbineDetail | null>("/api/turbine");
 }
 
 export type IngestMode = "sync" | "backfill";

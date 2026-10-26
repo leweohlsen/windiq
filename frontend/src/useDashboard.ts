@@ -9,10 +9,12 @@ import {
   fetchDaily,
   fetchMetrics,
   fetchRuns,
+  fetchTurbine,
   fetchWind,
   type DailyPoint,
   type IngestRun,
   type Metrics,
+  type TurbineDetail,
   type WindResponse,
 } from "./api";
 
@@ -30,6 +32,7 @@ export interface DashboardState {
   daily: Panel<DailyPoint[]>;
   wind: Panel<WindResponse>;
   runs: Panel<IngestRun[]>;
+  turbine: Panel<TurbineDetail | null>;
   refreshAll: () => void;
   /** True while any panel's fetch is in flight (for the global refresh button). */
   loading: boolean;
@@ -49,21 +52,24 @@ export function useDashboard(days: number): DashboardState {
   const daily = usePolled(() => fetchDaily(days), [days]);
   const wind = usePolled(() => fetchWind(WIND_HOURS));
   const runs = usePolled(() => fetchRuns(RUNS_LIMIT));
+  const turbine = usePolled(fetchTurbine);
 
   const refreshAll = useCallback(() => {
     metrics.refresh();
     daily.refresh();
     wind.refresh();
     runs.refresh();
-  }, [metrics, daily, wind, runs]);
+    turbine.refresh();
+  }, [metrics, daily, wind, runs, turbine]);
 
   return {
     metrics,
     daily,
     wind,
     runs,
+    turbine,
     refreshAll,
-    loading: metrics.loading || daily.loading || wind.loading || runs.loading,
+    loading: metrics.loading || daily.loading || wind.loading || runs.loading || turbine.loading,
   };
 }
 

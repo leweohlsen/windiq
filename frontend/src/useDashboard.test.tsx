@@ -5,7 +5,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useDashboard } from "./useDashboard";
-import { metrics, showTab, stubDashboardFetch } from "./test/helpers";
+import { metrics, showTab, stubDashboardFetch, turbine } from "./test/helpers";
 
 let fetchMock: ReturnType<typeof stubDashboardFetch>["fetchMock"];
 let responses: ReturnType<typeof stubDashboardFetch>["responses"];
@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 describe("useDashboard", () => {
-  it("loads all four panels on mount", async () => {
+  it("loads all five panels on mount", async () => {
     const { result } = renderHook(() => useDashboard(90));
 
     expect(result.current.loading).toBe(true);
@@ -32,7 +32,9 @@ describe("useDashboard", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/daily?days=90");
     expect(fetchMock).toHaveBeenCalledWith("/api/wind?hours=48");
     expect(fetchMock).toHaveBeenCalledWith("/api/ingest/runs?limit=10");
+    expect(fetchMock).toHaveBeenCalledWith("/api/turbine");
     expect(result.current.metrics.data).toBe(metrics);
+    expect(result.current.turbine.data).toBe(turbine);
     expect(result.current.loading).toBe(false);
   });
 

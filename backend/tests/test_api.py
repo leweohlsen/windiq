@@ -121,6 +121,24 @@ async def test_metrics_endpoint_chain_and_staleness(
     assert payload["coverage"]["absent_hours"] == 0
 
 
+async def test_turbine_endpoint_specs_and_curve(db, clean, reference):
+    await db.commit()      # reference rows are seeded uncommitted (see metrics test)
+    payload = await api_mod.turbine()
+    assert payload.name == "Test turbine"
+    assert payload.rated_power_kw == 3600.0
+    assert payload.hub_height_m == 140.0
+    assert payload.rotor_diameter_m == 136.0
+    assert payload.cut_in_wind_speed_ms == 3.0
+    assert payload.cut_out_wind_speed_ms == 25.0
+    assert [(p.wind_speed_ms, p.power_kw) for p in payload.power_curve] == [
+        (0.0, 0.0), (10.0, 1800.0), (20.0, 3600.0),
+    ]
+
+
+async def test_turbine_endpoint_none_without_turbine(db, clean):
+    assert await api_mod.turbine() is None
+
+
 async def test_wind_endpoint_series_and_rose(db, clean, reference, measurement_row, hour):
     await repo.upsert_measurements(db, [
         measurement_row(hour, 5.0, wind_dir=10),

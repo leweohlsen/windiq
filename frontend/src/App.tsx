@@ -8,6 +8,7 @@ import { WindPanel } from "./components/WindPanel";
 import { DataStatus } from "./components/DataStatus";
 import { IngestHistory } from "./components/IngestHistory";
 import { Methodology } from "./components/Methodology";
+import { ReferenceTurbine } from "./components/ReferenceTurbine";
 import { DAILY_RANGES, useDashboard, type Panel } from "./useDashboard";
 
 function App() {
@@ -15,10 +16,16 @@ function App() {
   const dashboard = useDashboard(days);
 
   // Skeleton gate: the dashboard appears in one piece once every panel holds
-  // its first data (or error) — no sections popping in one by one.
-  const booting = [dashboard.metrics, dashboard.daily, dashboard.wind, dashboard.runs].some(
-    (panel) => panel.data == null && panel.error == null,
-  );
+  // its first data (or error) — no sections popping in one by one. A panel
+  // that finished without data (e.g. no turbine yet) lifts the gate too;
+  // PanelState then shows its empty state.
+  const booting = [
+    dashboard.metrics,
+    dashboard.daily,
+    dashboard.wind,
+    dashboard.runs,
+    dashboard.turbine,
+  ].some((panel) => panel.data == null && panel.error == null && panel.loading);
 
   return (
     <main>
@@ -51,6 +58,13 @@ function App() {
 
           <section className="panel">
             <PanelState panel={dashboard.wind}>{(wind) => <WindPanel wind={wind} />}</PanelState>
+          </section>
+
+          <section className="panel">
+            <h2>Referenzanlage</h2>
+            <PanelState panel={dashboard.turbine}>
+              {(turbine) => turbine && <ReferenceTurbine turbine={turbine} />}
+            </PanelState>
           </section>
 
           <section className="panel">
@@ -151,6 +165,21 @@ function DashboardSkeleton({
           </div>
           <div>
             <h3 className="chart-title">Windgeschwindigkeit</h3>
+            <div className="chart skel" />
+          </div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Referenzanlage</h2>
+        <div className="charts-row">
+          <div className="cards">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="card skel-card" />
+            ))}
+          </div>
+          <div>
+            <h3 className="chart-title">Leistungskurve (Wirkungskurve)</h3>
             <div className="chart skel" />
           </div>
         </div>

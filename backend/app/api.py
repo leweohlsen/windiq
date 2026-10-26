@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.db import repo
 from app.db.engine import SessionLocal
-from app.db.models import Mast, Site, Turbine
+from app.db.models import Mast, PowerCurvePoint, Site, Turbine
 from app.ingest.common import new_run_id
 from app.worker import periodic_sync, run_backfill
 
@@ -101,6 +101,21 @@ class TurbineOut(BaseModel):
     rated_power_kw: float
     hub_height_m: float
     rotor_diameter_m: float
+
+
+class PowerCurvePointOut(BaseModel):
+    wind_speed_ms: float
+    power_kw: float
+
+
+class TurbineDetailOut(BaseModel):
+    name: str
+    rated_power_kw: float
+    hub_height_m: float
+    rotor_diameter_m: float
+    cut_in_wind_speed_ms: float
+    cut_out_wind_speed_ms: float
+    power_curve: list[PowerCurvePointOut]
 
 
 class MastOut(BaseModel):
@@ -217,6 +232,31 @@ async def metrics() -> MetricsOut:
 
 def _one(model):
     return select(model).limit(1)
+
+
+@router.get("/api/turbine")
+async def turbine() -> TurbineDetailOut | None:
+    """Reference turbine specs plus the full power curve (1 m/s steps)."""
+    async with SessionLocal() as s:
+        turbine = (await s.execute(_one(Turbine))).scalar_one_or_none()
+        if turbine is None:
+            return None
+        curve = (
+            await s.execute(
+                select(PowerCurvePoint.wind_speed_ms, PowerCurvePoint.power_kw)
+                .where(PowerCurvePoint.turbine_id == turbine.id)
+                .order_by(PowerCurvePoint.wind_speed_ms)
+            )
+        ).all()
+    return TurbineDetailOut(
+        name=turbine.name,
+        rated_power_kw=turbine.rated_power_kw,
+        hub_height_m=turbine.hub_height_m,
+        rotor_diameter_m=turbine.rotor_diameter_m,
+        cut_in_wind_speed_ms=turbine.cut_in_wind_speed_ms,
+        cut_out_wind_speed_ms=turbine.cut_out_wind_speed_ms,
+        power_curve=[PowerCurvePointOut(wind_speed_ms=ws, power_kw=kw) for ws, kw in curve],
+    )
 
 
 @router.get("/api/daily")
