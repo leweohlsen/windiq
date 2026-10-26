@@ -1,7 +1,8 @@
 /** Daily chart — ComposedChart: bars = daily energy (MWh) with per-bar QC
  * coloring via Cell (clean → accent, suspect hours → amber, no ok hours →
  * gap), line = mean wind (m/s) on the second y-axis; tooltip shows ok hours +
- * QC counts; range switcher 30/90/365 days (plan phase 4). */
+ * QC counts. Title and range switcher live in App's panel head. */
+import { memo } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -16,7 +17,7 @@ import {
 } from "recharts";
 
 import type { DailyPoint } from "../api";
-import { DAILY_RANGES } from "../useDashboard";
+import { useAnimateOnce } from "../useAnimateOnce";
 import { asHours, asMs, asMWh } from "../format";
 
 const CLEAN = "#3b82f6";
@@ -29,70 +30,49 @@ const barColor = (point: DailyPoint): string => {
   return CLEAN;
 };
 
-export function DailyChart({
-  daily,
-  days,
-  onRangeChange,
-}: {
-  daily: DailyPoint[];
-  days: number;
-  onRangeChange: (days: number) => void;
-}) {
+/** Memoized: per-panel data references stay stable across unchanged polls,
+ * so a metrics-only tick never reconciles the (up to 365-point) chart. */
+export const DailyChart = memo(function DailyChart({ daily }: { daily: DailyPoint[] }) {
+  const animate = useAnimateOnce();
+
   const chartData = daily.map((point) => ({
     ...point,
     energy_mwh: point.energy_kwh == null ? null : point.energy_kwh / 1000,
   }));
 
   return (
-    <>
-      <div className="panel-head">
-        <h2>Tagesenergie ({days} Tage)</h2>
-        <div className="range-switch">
-          {DAILY_RANGES.map((range) => (
-            <button
-              key={range}
-              className={range === days ? "active" : ""}
-              onClick={() => onRangeChange(range)}
-            >
-              {range} d
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="chart">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              dataKey="day"
-              tickFormatter={(day: string) => day.slice(5)}
-              minTickGap={24}
-            />
-            <YAxis
-              yAxisId="energy"
-              tickFormatter={(mwh: number) => mwh.toFixed(0)}
-            />
-            <YAxis yAxisId="wind" orientation="right" width={40} />
-            <Tooltip content={<DailyTooltip />} />
-            <Legend />
-            <Bar yAxisId="energy" dataKey="energy_mwh" name="Tagesenergie">
-              {chartData.map((entry, index) => (
-                <Cell key={entry.day} fill={barColor(daily[index])} />
-              ))}
-            </Bar>
-            <Line
-              yAxisId="wind"
-              dataKey="mean_wind_ms"
-              name="Mittlere Windgeschwindigkeit (m/s)"
-              stroke="#b45309"
-              dot={false}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
-    </>
+    <div className="chart">
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="day" tickFormatter={(day: string) => day.slice(5)} minTickGap={24} />
+          <YAxis yAxisId="energy" tickFormatter={(mwh: number) => mwh.toFixed(0)} />
+          <YAxis yAxisId="wind" orientation="right" width={40} />
+          <Tooltip content={<DailyTooltip />} />
+          <Legend />
+          <Bar
+            yAxisId="energy"
+            dataKey="energy_mwh"
+            name="Tagesenergie"
+            isAnimationActive={animate}
+          >
+            {daily.map((point) => (
+              <Cell key={point.day} fill={barColor(point)} />
+            ))}
+          </Bar>
+          <Line
+            yAxisId="wind"
+            dataKey="mean_wind_ms"
+            name="Mittlere Windgeschwindigkeit (m/s)"
+            stroke="#b45309"
+            dot={false}
+            isAnimationActive={animate}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   );
-}
+});
 
 function DailyTooltip({
   active,
@@ -101,14 +81,13 @@ function DailyTooltip({
   active?: boolean;
   payload?: { payload: DailyPoint }[];
 }) {
-  if (!active || !payload || payload.length === 0) return null;
-  const point = payload[0].payload;
+  if (!active) return null;
+  const point = payload?.[0]?.payload;
+  if (!point) return null;
 
   return (
     <div className="tooltip">
-      <div className="tooltip-title">
-        {new Date(point.day).toLocaleDateString("de-DE")}
-      </div>
+      <div className="tooltip-title">{new Date(point.day).toLocaleDateString("de-DE")}</div>
       <div>
         Energie: <strong>{asMWh(point.energy_kwh)} MWh</strong>
       </div>
@@ -116,9 +95,7 @@ function DailyTooltip({
         Mittlerer Wind: {asMs(point.mean_wind_ms)} m/s
         {point.max_wind_ms != null && ` · max ${asMs(point.max_wind_ms)} m/s`}
       </div>
-      <div>
-        Verwertbare Stunden: {asHours(point.hours)}/24
-      </div>
+      <div>Verwertbare Stunden: {asHours(point.hours)}/24</div>
       <div>
         QC: {point.suspect_hours} verdächtig · {point.missing_hours} ohne Wert
       </div>

@@ -1,6 +1,8 @@
 /** Per-panel polling hook — all four dashboard GETs share the 60 s cadence
  * (paused while the tab is hidden) plus a manual refresh. Independent
- * loading/error state lets each panel degrade on its own. */
+ * loading/error state lets each panel degrade on its own. Background polls
+ * are silent: no loading toggle, and unchanged payloads don't update state,
+ * so idle cycles render nothing. */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -69,43 +71,68 @@ function usePolled<T>(load: () => Promise<T>, deps: readonly unknown[] = []): Pa
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const dataJsonRef = useRef<string | null>(null);
+  const requestIdRef = useRef(0);
   const loadRef = useRef(load);
-  loadRef.current = load;
 
-  const refresh = useCallback(() => {
-    setLoading(true);
+  // keep the dispatching loader fresh without re-creating `run`; declared
+  // before the fetch effect below so it lands first on the same commit
+  useEffect(() => {
+    loadRef.current = load;
+  });
+
+  const run = useCallback(() => {
+    const requestId = ++requestIdRef.current;
     loadRef
       .current()
       .then((result) => {
-        setData(result);
+        // a newer run (e.g. manual refresh racing the poll) supersedes this one
+        if (requestId !== requestIdRef.current) return;
+        const json = JSON.stringify(result);
+        if (json !== dataJsonRef.current) {
+          dataJsonRef.current = json;
+          setData(result);
+        }
         setError(null);
       })
       .catch((err: unknown) => {
+        if (requestId !== requestIdRef.current) return;
         setError(err instanceof Error ? err.message : "Unbekannter Fehler");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (requestId !== requestIdRef.current) return;
+        setLoading(false);
+      });
   }, []);
 
-  // `deps` carry the loader's inputs (e.g. the daily range); the dispatching
-  // loader itself is always fresh via `loadRef`
+  const refresh = useCallback(() => {
+    setLoading(true);
+    run();
+  }, [run]);
+
+  // `deps` carry the loader's inputs (e.g. the daily range); a change is
+  // user-initiated, so it goes through `refresh` for the loading indicators.
+  // Background polls below stay silent. Both disables are deliberate: spread
+  // deps can't be statically verified, and the loading flag is set
+  // synchronously by design in this data-fetching effect.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh, ...deps]);
 
   useEffect(() => {
     const timer = setInterval(() => {
-      if (!document.hidden) refresh();
+      if (!document.hidden) run();
     }, POLL_MS);
     const onVisible = () => {
-      if (!document.hidden) refresh();
+      if (!document.hidden) run();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [refresh]);
+  }, [run]);
 
   return { data, error, loading, refresh };
 }

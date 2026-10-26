@@ -1,6 +1,7 @@
 /** Wind panel — wind rose as polar RadarChart over the 16 server-computed
  * sectors (frequency encoded in radius, ok-hours tooltip) plus a plain 48 h
  * speed line; direction appears only in the rose (plan phase 4). */
+import { memo } from "react";
 import {
   CartesianGrid,
   Line,
@@ -17,6 +18,7 @@ import {
 } from "recharts";
 
 import type { RoseSector, WindResponse } from "../api";
+import { useAnimateOnce } from "../useAnimateOnce";
 import { asClock, asHours, asMs } from "../format";
 import type { ComponentProps } from "react";
 
@@ -25,15 +27,31 @@ const LINE = "#b45309";
 
 /* Compass order N → NNW, i.e. clockwise, matching the server's 16 sectors. */
 const COMPASS = [
-  "N", "NNE", "NE", "ENE",
-  "E", "ESE", "SE", "SSE",
-  "S", "SSW", "SW", "WSW",
-  "W", "WNW", "NW", "NNW",
+  "N",
+  "NNE",
+  "NE",
+  "ENE",
+  "E",
+  "ESE",
+  "SE",
+  "SSE",
+  "S",
+  "SSW",
+  "SW",
+  "WSW",
+  "W",
+  "WNW",
+  "NW",
+  "NNW",
 ];
 const COMPASS_STEP = 360 / COMPASS.length;
 const COMPASS_TICKS = COMPASS.map((_, i) => i * COMPASS_STEP);
 
-export function WindPanel({ wind }: { wind: WindResponse }) {
+/** Memoized: per-panel data references stay stable across unchanged polls,
+ * so a metrics-only tick never reconciles either chart. */
+export const WindPanel = memo(function WindPanel({ wind }: { wind: WindResponse }) {
+  const animate = useAnimateOnce();
+
   const series = wind.series.map((point) => ({
     timestamp: point.timestamp,
     wind_speed_ms: point.wind_speed_ms,
@@ -54,8 +72,8 @@ export function WindPanel({ wind }: { wind: WindResponse }) {
       <div className="charts-row">
         <div>
           <h3 className="chart-title">
-            Windrose — {asHours(wind.rose.reduce((n, s) => n + s.frequency, 0))}{" "}
-            verwertbare Stunden · letzte 30 Tage
+            Windrose — {asHours(wind.rose.reduce((n, s) => n + s.frequency, 0))} verwertbare Stunden
+            · letzte 30 Tage
           </h3>
           <div className="chart chart-rose">
             <ResponsiveContainer width="100%" height="100%">
@@ -66,10 +84,18 @@ export function WindPanel({ wind }: { wind: WindResponse }) {
                   type="number"
                   domain={[0, 360]}
                   ticks={COMPASS_TICKS as unknown as ComponentProps<typeof PolarAngleAxis>["ticks"]}
-                  tickFormatter={(deg: number) => COMPASS[Math.round(deg / COMPASS_STEP) % 16]}
+                  tickFormatter={(deg: number) =>
+                    COMPASS[Math.round(deg / COMPASS_STEP) % COMPASS.length] ?? "N"
+                  }
                 />
                 <PolarRadiusAxis domain={[0, maxFreq]} tick={false} axisLine={false} />
-                <Radar dataKey="frequency" stroke={BAR} fill={BAR} fillOpacity={0.4} />
+                <Radar
+                  dataKey="frequency"
+                  stroke={BAR}
+                  fill={BAR}
+                  fillOpacity={0.4}
+                  isAnimationActive={animate}
+                />
                 <Tooltip content={<RoseTooltip />} />
               </RadarChart>
             </ResponsiveContainer>
@@ -77,9 +103,7 @@ export function WindPanel({ wind }: { wind: WindResponse }) {
           </div>
         </div>
         <div>
-          <h3 className="chart-title">
-            Windgeschwindigkeit — letzte {wind.hours} h (Messhöhe)
-          </h3>
+          <h3 className="chart-title">Windgeschwindigkeit — letzte {wind.hours} h (Messhöhe)</h3>
           <div className="chart">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={series}>
@@ -104,6 +128,7 @@ export function WindPanel({ wind }: { wind: WindResponse }) {
                   name="Windgeschwindigkeit (m/s)"
                   stroke={LINE}
                   dot={false}
+                  isAnimationActive={animate}
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -112,7 +137,7 @@ export function WindPanel({ wind }: { wind: WindResponse }) {
       </div>
     </>
   );
-}
+});
 
 function RoseTooltip({
   active,
@@ -121,8 +146,9 @@ function RoseTooltip({
   active?: boolean;
   payload?: { payload: RoseSector }[];
 }) {
-  if (!active || !payload || payload.length === 0) return null;
-  const sector = payload[0].payload;
+  if (!active) return null;
+  const sector = payload?.[0]?.payload;
+  if (!sector) return null;
   return (
     <div className="tooltip">
       <div className="tooltip-title">
@@ -143,8 +169,9 @@ function SpeedTooltip({
   active?: boolean;
   payload?: { payload: { timestamp: string; wind_speed_ms: number } }[];
 }) {
-  if (!active || !payload || payload.length === 0) return null;
-  const point = payload[0].payload;
+  if (!active) return null;
+  const point = payload?.[0]?.payload;
+  if (!point) return null;
   return (
     <div className="tooltip">
       <div className="tooltip-title">{asClock(point.timestamp)}</div>

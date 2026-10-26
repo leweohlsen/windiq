@@ -16,7 +16,11 @@
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
   background: var(--bg);
   color: var(--text);
 }
@@ -39,9 +43,10 @@ main {
   width: auto;
 }
 
-h1 {
-  margin: 0 0 4px;
-  font-size: 26px;
+/* Both button labels are 13 chars — the min-width just pins the box so the
+ * swap can never nudge the header. */
+.masthead button {
+  min-width: 140px;
 }
 
 .subtitle {
@@ -282,19 +287,6 @@ table.factors {
   opacity: 0.9;
 }
 
-.loading {
-  color: var(--muted);
-}
-
-.error-panel {
-  border-color: #fecaca;
-}
-
-.error-panel p {
-  margin: 0 0 10px;
-  color: var(--red);
-}
-
 .error-note {
   color: var(--red);
   font-size: 13px;
@@ -323,4 +315,129 @@ footer {
   margin-top: 28px;
   font-size: 13px;
   color: var(--muted);
+}
+
+/* --- first-load skeleton gate ------------------------------------------- */
+
+.dashboard {
+  animation: fade-in 0.25s ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.skel {
+  border-radius: 8px;
+  background: #e9edf3;
+  animation: skel-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes skel-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* --- loading indicators -------------------------------------------------- */
+
+/* Thin indeterminate sweep, fixed at the viewport top so it never shifts
+   layout; shows only for user-initiated fetches (background polls are silent). */
+.progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.progress::before {
+  content: "";
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #7c3aed);
+  border-radius: 0 2px 2px 0;
+  opacity: 0;
+}
+
+.progress.active::before {
+  opacity: 1;
+  animation: progress-sweep 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-sweep {
+  0% {
+    transform: translateX(-100%) scaleX(0.5);
+  }
+  55% {
+    transform: translateX(25%) scaleX(0.55);
+  }
+  100% {
+    transform: translateX(105%) scaleX(0.4);
+  }
+}
+
+/* panel content dims while its own refresh is in flight */
+.data {
+  transition: opacity 0.2s ease;
+}
+
+.data.refreshing {
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard,
+  .skel {
+    animation: none;
+  }
+
+  .progress.active::before {
+    animation: none;
+    opacity: 0.45;
+  }
+}
+
+.skel-line {
+  display: block;
+  height: 14px;
+  width: 46ch;
+  max-width: 100%;
+}
+
+.skel-card {
+  height: 84px;
+}
+
+.skel-block {
+  height: 210px;
+}
+
+.skel-method {
+  height: 320px;
+}
+
+.skel-table {
+  height: 320px;
+}
+
+/* --- merged status panel ------------------------------------------------- */
+
+.ingest-title {
+  margin-top: 18px;
+}
+
+.table-scroll {
+  overflow-x: auto;
 }

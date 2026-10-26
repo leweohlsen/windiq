@@ -1,57 +1,37 @@
 /** Data status — last ingest run (status pill, finished at, duration,
  * inserted/updated, QC counts), data age with warning state, coverage %,
- * QC totals, max gap and a "sync now" button (optimistic "queued…" until the
- * next poll shows a new run via POST /api/ingest/run) (plan phase 4). */
-import { useEffect, useState } from "react";
+ * QC totals, max gap and a "sync now" button (plan phase 4). */
+import { useState } from "react";
 
 import { postIngestRun } from "../api";
 import type { IngestRun, Metrics } from "../api";
-import {
-  asAge,
-  asClock,
-  asHours,
-  asPercent,
-  asDuration,
-  asStatus,
-} from "../format";
+import { asAge, asClock, asHours, asPercent, asDuration, asStatus } from "../format";
 import { STALE_AFTER_SECONDS } from "../useDashboard";
 
-export function DataStatus({
-  metrics,
-  runs,
-}: {
-  metrics: Metrics;
-  runs: IngestRun[] | null;
-}) {
+export function DataStatus({ metrics, runs }: { metrics: Metrics; runs: IngestRun[] | null }) {
   const { coverage, staleness } = metrics;
   const lastRun = staleness.last_run ?? runs?.[0] ?? null;
 
   const [queuedAt, setQueuedAt] = useState<number | null>(null);
-  const [queueFailed, setQueueFailed] = useState(false);
+  const [failedAt, setFailedAt] = useState<number | null>(null);
 
-  // the optimistic badge clears once a run whose start is after the request
-  // shows up in a polled ingest history — i.e. the worker ran the sync
-  useEffect(() => {
-    if (queuedAt == null) return;
-    const fresh = (runs ?? []).some(
-      (run) => new Date(run.started_at).getTime() > queuedAt,
-    );
-    if (fresh) {
-      setQueuedAt(null);
-      setQueueFailed(false);
-    }
-  }, [runs, queuedAt]);
+  // The queued badge and the failure note are derived: both clear once a run
+  // started after the request shows up in the polled ingest history.
+  const hasRunSince = (since: number) =>
+    (runs ?? []).some((run) => new Date(run.started_at).getTime() > since);
+  const queued = queuedAt != null && !hasRunSince(queuedAt);
+  const queueFailed = failedAt != null && !hasRunSince(failedAt);
 
   const stale = (staleness.data_age_seconds ?? 0) > STALE_AFTER_SECONDS;
 
   const queueSync = async () => {
-    setQueueFailed(false);
     try {
       setQueuedAt(Date.now());
+      setFailedAt(null);
       await postIngestRun("sync");
     } catch {
       setQueuedAt(null);
-      setQueueFailed(true);
+      setFailedAt(Date.now());
     }
   };
 
@@ -63,27 +43,20 @@ export function DataStatus({
           {lastRun ? (
             <>
               <li>
-                <span className={`pill pill-${lastRun.status}`}>
-                  {asStatus(lastRun.status)}
-                </span>
-                {queuedAt != null && (
-                  <span className="pill pill-queued">in Warteschlange…</span>
-                )}
+                <span className={`pill pill-${lastRun.status}`}>{asStatus(lastRun.status)}</span>
+                {queued && <span className="pill pill-queued">in Warteschlange…</span>}
               </li>
               <li>
                 Abgeschlossen: {asClock(lastRun.finished_at)} · Dauer{" "}
                 {asDuration(lastRun.started_at, lastRun.finished_at)}
               </li>
               <li>
-                Seiten {lastRun.pages} · {lastRun.inserted} neu ·{" "}
-                {lastRun.updated} geändert
+                Seiten {lastRun.pages} · {lastRun.inserted} neu · {lastRun.updated} geändert
               </li>
-              {(lastRun.qc_missing > 0 ||
-                lastRun.qc_suspect > 0 ||
-                lastRun.qc_malformed > 0) && (
+              {(lastRun.qc_missing > 0 || lastRun.qc_suspect > 0 || lastRun.qc_malformed > 0) && (
                 <li>
-                  QC des Laufs: {lastRun.qc_missing} ohne Wert ·{" "}
-                  {lastRun.qc_suspect} verdächtig · {lastRun.qc_malformed} fehlerhaft
+                  QC des Laufs: {lastRun.qc_missing} ohne Wert · {lastRun.qc_suspect} verdächtig ·{" "}
+                  {lastRun.qc_malformed} fehlerhaft
                 </li>
               )}
             </>
@@ -92,12 +65,10 @@ export function DataStatus({
           )}
         </ul>
         <button className="action" onClick={() => void queueSync()}>
-          {queuedAt != null ? "In Warteschlange…" : "Jetzt synchronisieren"}
+          {queued ? "In Warteschlange…" : "Jetzt synchronisieren"}
         </button>
         {queueFailed && (
-          <p className="error-note">
-            Einreihung fehlgeschlagen — bitte später erneut versuchen.
-          </p>
+          <p className="error-note">Einreihung fehlgeschlagen — bitte später erneut versuchen.</p>
         )}
       </div>
 
@@ -106,8 +77,11 @@ export function DataStatus({
         <ul className="status-list">
           <li>
             Datenalter:{" "}
-            {stale ? <span className="warn">{asAge(staleness.data_age_seconds)} (veraltet)</span>
-              : asAge(staleness.data_age_seconds)}
+            {stale ? (
+              <span className="warn">{asAge(staleness.data_age_seconds)} (veraltet)</span>
+            ) : (
+              asAge(staleness.data_age_seconds)
+            )}
           </li>
           <li>
             Abdeckung: {asPercent(coverage.usable_hours, coverage.expected_hours)} % (
@@ -115,13 +89,11 @@ export function DataStatus({
           </li>
           <li>
             QC-Statistik: {asHours(coverage.absent_hours)} nicht geliefert ·{" "}
-            {asHours(coverage.missing_hours)} ohne Wert ·{" "}
-            {asHours(coverage.suspect_hours)} verdächtig ·{" "}
-            {asHours(coverage.malformed_hours)} fehlerhaft
+            {asHours(coverage.missing_hours)} ohne Wert · {asHours(coverage.suspect_hours)}{" "}
+            verdächtig · {asHours(coverage.malformed_hours)} fehlerhaft
           </li>
           <li>
-            Maximale Lücke: {asHours(coverage.max_gap_hours)} h innerhalb der
-            letzten 12 Monate
+            Maximale Lücke: {asHours(coverage.max_gap_hours)} h innerhalb der letzten 12 Monate
           </li>
         </ul>
       </div>

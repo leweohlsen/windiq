@@ -19,11 +19,9 @@ export const asMs = (value: number | null, decimals = 1) =>
 export const asNum = (value: number | null | undefined, decimals = 2) =>
   value == null
     ? "–"
-    : new Intl.NumberFormat("de-DE", { maximumFractionDigits: decimals })
-        .format(value);
+    : new Intl.NumberFormat("de-DE", { maximumFractionDigits: decimals }).format(value);
 
-export const asHours = (value: number | null) =>
-  value == null ? "–" : nf(0).format(value);
+export const asHours = (value: number | null) => (value == null ? "–" : nf(0).format(value));
 
 /** Share in percent without the sign — callers append the spaced " %". */
 export const asPercent = (part: number, whole: number, decimals = 1) =>
