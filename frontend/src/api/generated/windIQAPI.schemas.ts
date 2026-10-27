@@ -18,12 +18,9 @@ export interface CoverageOut {
   from_ts: string | null;
   to_ts: string | null;
   total_hours: number;
-  usable_hours: number;
-  suspect_hours: number;
-  missing_hours: number;
-  malformed_hours: number;
   expected_hours: number;
   absent_hours: number;
+  interpolated_hours: number;
   max_gap_hours: number | null;
 }
 
@@ -33,8 +30,6 @@ export interface DailyPointOut {
   hours: number | null;
   mean_wind_ms: number | null;
   max_wind_ms: number | null;
-  suspect_hours: number;
-  missing_hours: number;
 }
 
 export type ValidationErrorCtx = { [key: string]: unknown };
@@ -61,9 +56,7 @@ export interface IngestRunOut {
   updated: number;
   frame_from: string | null;
   frame_to: string | null;
-  qc_missing: number;
-  qc_suspect: number;
-  qc_malformed: number;
+  interpolated: number;
   max_gap_hours: number | null;
   detail: string | null;
 }
@@ -143,10 +136,9 @@ export interface WindPointOut {
   mean_wind_ms: number | null;
   min_wind_ms: number | null;
   max_wind_ms: number | null;
-  ok_hours: number;
-  suspect_hours: number;
-  missing_hours: number;
-  malformed_hours: number;
+  interpolated_hours: number;
+  qc_note: string | null;
+  wind_speed_raw: string | null;
 }
 
 export interface WindOut {

@@ -255,6 +255,25 @@ main {
   font-size: 12px;
 }
 
+/* Reference turbine: spec cards left, power curve exactly half the page */
+.charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.charts-row .cards {
+  grid-template-columns: repeat(2, 1fr);
+  margin-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* --- data status + history --------------------------------------------- */
 
 .status-grid {
@@ -306,6 +325,58 @@ table.factors {
 
 /* --- tooltips ---------------------------------------------------------- */
 
+/* hand-rolled (visx) charts render into this sized wrapper */
+.chart-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* block, so the svg can't sit on the text baseline — an inline svg makes the
+ * container ~4px taller than the svg, which feeds the ResizeObserver loop */
+.chart-inner svg {
+  display: block;
+}
+
+/* .tooltip boxes are absolutely positioned by the chart kit */
+.tooltip-wrap {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding-bottom: 10px;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.chart-legend {
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.chart-legend .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+
+.chart-legend .line-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  margin-right: 5px;
+}
+
 .tooltip {
   background: var(--card);
   border: 1px solid var(--border);
@@ -321,6 +392,11 @@ table.factors {
 .tooltip-title {
   font-weight: 600;
   margin-bottom: 2px;
+}
+
+.interp-note {
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* per-panel states */

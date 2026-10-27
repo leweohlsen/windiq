@@ -17,7 +17,7 @@ export function IngestHistory({ runs }: { runs: IngestRun[] }) {
             <th>Dauer</th>
             <th>Seiten</th>
             <th>Zeilen (neu/geändert)</th>
-            <th>QC (o. W./verd./fehler)</th>
+            <th>Interpoliert</th>
             <th>Maximale Lücke</th>
             <th>Details</th>
           </tr>
@@ -34,9 +34,7 @@ export function IngestHistory({ runs }: { runs: IngestRun[] }) {
               <td>
                 {run.inserted} / {run.updated}
               </td>
-              <td>
-                {run.qc_missing} / {run.qc_suspect} / {run.qc_malformed}
-              </td>
+              <td>{run.interpolated}</td>
               <td>{asHours(run.max_gap_hours)} h</td>
               <td className="detail">{run.detail ?? "–"}</td>
             </tr>

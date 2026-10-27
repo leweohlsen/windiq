@@ -53,17 +53,19 @@ Consequence: **no hardcoded row counts, gap sizes or anomaly totals in tests or 
 Tests must be property-based (rule coverage), and all coverage statistics must be computed
 at query time.
 
-## Agreed QC contract (decisions 2026-10-25)
+## Agreed QA contract (decisions 2026-10-25, QC-at-ingest 2026-10-27)
 
 | Decision | Rationale |
 | --- | --- |
-| `-999.0` sentinel → `quality='missing'`, `wind_speed_ms = NULL` | Sentinel means "no data"; small negatives stay `suspect` |
-| Numeric strings that parse cleanly (`"7.47"`) → `quality='ok'` | Value is plausible; only the type was sloppy — excluding the hour would corrupt energy stats for no data reason |
-| Plausibility upper bound = turbine `cut_out` + margin (from DB, versioned) | Moves with the reference data instead of a magic 25/40 m/s constant |
+| `-999.0` sentinel → rejected (`missing`), hour interpolated, `qc_note` "kein Messwert geliefert" | Sentinel means "no data"; the hour stays fed but must be transparently synthesized |
+| Small negatives → rejected (`negative`), interpolated ("negativer Messwert") | Sensor drift values are unusable — an ingest-time fix beats a query-time flag |
+| Plausibility upper bound = turbine `cut_out` + margin (from DB, versioned) → rejected (`over-cut-out`) | Moves with the reference data instead of a magic 25/40 m/s constant |
+| Numeric strings that parse cleanly (`"7.47"`) → stored as ok | Value is plausible; only the type was sloppy — dropping the hour would interpolate for no reason |
 | Persist `timestamp_raw` (original string with suffix) | 1 column; keeps the `+00:00`/`Z` dupe evidence auditable and re-derivable |
 | Unit whitelist `{m/s, km/h}`, unknown unit → `malformed` | Fail typed at parse time instead of mid-pipeline |
-| `ingest_runs` gets QC defect counts + max gap per run | A run with > 30 % suspect rows on a page is an API change → status `partial`, not `ok` |
+| Ingest persistently quantizes its rejections into `ingest_runs.interpolated` + max gap per run | A run with > 30 % rejected rows on a page is an API change → status `partial`, not `ok` |
 | New rows of unexpected shape (bool, int subtype, dict, …) → `malformed` + explicit unreachable-branch log | Better a loud dead-letter than a silent wrong value |
+| Rows the QA rejects are never stored with a value; the ingest writes an interpolated value + reason (`qc_note`) instead | Query/UI stay simple: no `quality` column, no QC filters, one reason surface |
 
-Schema deltas and the updated QC rule table are tracked in
+Schema deltas and the updated QA rule table are tracked in
 [implementation-plan.md](implementation-plan.md) (Phase 1 schema deltas, Phase 2 QC rules).

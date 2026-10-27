@@ -14,13 +14,15 @@ One run shape for every trigger:
  startup backfill   ───┐
    (gated)             │     advisory xact lock ("skipped" if busy)
  cron */5             ─┼──▶  → refresh reference data                    ──▶  guarded upserts
- "Sync now" (POST)     │     → paged fetch → normalize + QC each row      │   (ON CONFLICT +
-                       │     → gap estimate over the written frame       │   updated_at guard)
-                                                                 ──▶  ingest_runs journal
+ "Sync now" (POST)     │     → paged fetch → normalize + QA each row     │   (ON CONFLICT +
+                       │     → interpolation fill over the whole range   │   updated_at guard)
+                                                                ──▶  ingest_runs journal
 ```
 
-Bugs in any fetch/QC layer can never corrupt stored data — the upsert guard is
-the single load-bearing decision.
+Bugs in any fetch/QA layer can never corrupt stored data — the upsert guard is
+the single load-bearing decision. The stored invariant: **every row in
+`measurements` has a usable `wind_speed_ms`**; hours rejected at ingest are
+filled by linear interpolation with a persisted reason (`qc_note`).
 
 ## Triggers
 
@@ -50,21 +52,55 @@ the single load-bearing decision.
 cursor loop until `next_cursor = null`, `MAX_PAGES` (10k) breaker. Inclusive
 boundary rows and re-looped pages upsert to `(0, 0)`.
 
-## Normalization + QC
+## Normalization + QA
 
 Canonical m/s + UTC `timestamptz` key created at ingest (`app/ingest/qc.py`;
-full evidence: quirks doc):
+full evidence: quirks doc). A row either converts cleanly (stored) or is
+*rejected with a defect class* — rejected hours exist as interpolated rows:
 
-| Input | Quality | Stored |
+| Input | Defect class | `qc_note` after the fill |
 | --- | --- | --- |
-| `null` / sentinel `−999.0` | `missing` | `NULL`, raw kept |
-| small negative (drift) / > cut-out + margin (read from DB) | `suspect` | float kept |
-| numeric string / float in range | `ok` | float |
-| unparseable, other shapes, bad unit | `malformed` | `NULL`, loud dead-letter log |
-| `unit: 'km/h'` / timezone suffixes | (as row) | ÷ 3.6 / → UTC |
+| `null` / sentinel `−999.0` | `missing` | "kein Messwert geliefert" |
+| small negative (drift) | `negative` | "negativer Messwert" |
+| > cut-out + margin (read from DB) | `over-cut-out` | "Messwert über Cut-Out" |
+| unparseable value, other shapes, bad unit | `malformed` | "unlesbarer Messwert" |
+| direction out of range | `malformed-dir` | "unplausible Windrichtung" |
+| hour the API never delivered | — | "Stunde nicht geliefert" |
+| numeric string / float in range, valid direction | none (stored) | NULL |
 
-Only `ok` rows are CHECK-guarded (`measurements_qc_values`) and count toward
-energy; suspect hours stay visible but yield no energy. QC is property-tested.
+The stored contract: rows carry the rejected *originals* as provenance —
+`wind_speed_raw`/`timestamp_raw` keep what the API sent, so `wind_speed_raw =
+"-999.0"` next to `qc_note` discloses exactly what was interpolated away.
+`unit` is gone: values are canonical m/s before storage.
+
+### Interpolation fill (`repo.interpolate_gaps`)
+
+One set-based statement at the end of every ingest, over the **whole stored
+range** — self-healing instead of bookkeeping:
+
+- fills hours with no stored row (API never delivered them) between the two
+  closest real rows; both anchors missing (store edges) → hour stays absent;
+- recomputes interpolated rows whose anchors changed (keeping their note);
+- anchors on real rows only (`qc_note IS NULL`), so fills never chain fills;
+- writes a defect hour only when its rejected revision is not superseded by
+  an already-stored real one (late `ok` revisions re-land via the upsert).
+
+Interpolated rows carry the defect revision's `(updated_at, version)` — safe
+for the sync watermark — or the bounding anchor's for never-delivered hours.
+
+### Where the numbers land
+
+- energy/AEP/rose/series queries have **no QC filter at all** — every stored
+  row counts;
+- the wind panel shows the reason per bucket from `qc_note`, plus the
+  rejected original (`wind_speed_raw`) — `wind_series` aggregates both for
+  day/week buckets (raws are unit-dependent text as received);
+- `ingest_runs.interpolated` counts the hours a run rejected;
+- `coverage` reports `absent_hours` (unfillable edges) and
+  `interpolated_hours`.
+
+QA is property-tested (`test_qc.py`), the fill integration-tested
+(`test_db.py`: fill idempotence, revision supersede, real-beats-interpolated).
 
 ## Guarded upsert
 
@@ -75,6 +111,11 @@ INSERT … ON CONFLICT (mast_id, timestamp) DO UPDATE SET …
 
 Conflict key: `(mast_id, timestamp)` — canonical UTC hour; `Z`/`+00:00`
 duplicate rows (quirk 6) collapse deterministically.
+
+For measurements the guard has one relaxation: **any real revision replaces an
+interpolated row**, even one replayed with an older stamp the guard would
+skip — the stored interpolation is our synthesis, not an API revision, so a
+replayed `ok` revision must still win.
 
 | Situation | stored vs incoming `updated_at` | Effect |
 | --- | --- | --- |
@@ -112,9 +153,9 @@ refreshes move the bound with it.
 
 ## Journaling (`ingest_runs`)
 
-Every run journals: `ok`/`partial`/`error`, pages, inserted/updated, QC counts,
-max gap, detail. > 30 % suspect rows in a page → run `partial` (API change, not
-bad data). A crash journals `error` in its own transaction (main tx rolls
+Every run journals: `ok`/`partial`/`error`, pages, inserted/updated, the
+interpolation count, max gap, detail (defect-class breakdown). > 30 % rejected
+rows in a page → run `partial` (API change, not bad data). A crash journals `error` in its own transaction (main tx rolls
 back). Failures surface in `/api/health` + dashboard; each cycle carries a
 `run=<id>` marker through api/worker/scheduler logs.
 
@@ -132,7 +173,7 @@ back). Failures surface in `/api/health` + dashboard; each cycle carries a
 
 ## Tests
 
-`test_db.py`: upsert precedence/batch/dedupe + QC constraint, gate outcomes ·
-`test_ingest.py`: idempotent backfill, watermark + overlap, lock skip ·
-`test_worker.py`: sweep + gate orchestration, task smoke · `test_qc.py`:
-property-based rules.
+`test_db.py`: upsert precedence/batch/dedupe, interpolation fill, gate
+outcomes · `test_ingest.py`: idempotent backfill (real + interpolated rows),
+watermark + overlap, lock skip · `test_worker.py`: sweep + gate orchestration,
+task smoke · `test_qc.py`: property-based rules.

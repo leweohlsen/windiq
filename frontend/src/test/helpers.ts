@@ -84,10 +84,9 @@ function makeWindSeries(count: number) {
       mean_wind_ms: mean,
       min_wind_ms: mean - 1,
       max_wind_ms: mean + 1,
-      ok_hours: 1,
-      suspect_hours: 0,
-      missing_hours: 0,
-      malformed_hours: 0,
+      interpolated_hours: 0,
+      qc_note: null,
+      wind_speed_raw: null,
     };
   });
 }

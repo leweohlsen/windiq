@@ -88,27 +88,18 @@ describe("App", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/wind?days=2&resolution=hour",
-      expect.anything(),
-    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/wind?days=2&resolution=hour", expect.anything());
 
     await act(async () => {
       screen.getByRole("button", { name: "7 d" }).click();
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/wind?days=7&resolution=hour",
-      expect.anything(),
-    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/wind?days=7&resolution=hour", expect.anything());
 
     await act(async () => {
       screen.getByRole("button", { name: "Täglich" }).click();
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/wind?days=7&resolution=day",
-      expect.anything(),
-    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/wind?days=7&resolution=day", expect.anything());
   });
 });

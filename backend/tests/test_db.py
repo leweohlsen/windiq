@@ -106,11 +106,18 @@ async def test_upsert_dedupes_within_batch(db, clean, reference, measurement_row
     assert (wind_speed_ms, version) == (6.0, 2)
 
 
-async def test_quality_check_constraint(db, clean, reference, measurement_row, hour):
+async def test_inserted_rows_always_carry_a_value(db, clean, reference, measurement_row, hour):
+    """The stored invariant: every measurement row has a usable speed."""
     t0 = hour
-    with pytest.raises(Exception):  # noqa: B017 — PG IntegrityError, driver-wrapped
-        await repo.upsert_measurements(db, [measurement_row(t0, 5.0, quality="broken")])
-    await db.rollback()
+    await repo.upsert_measurements(db, [
+        measurement_row(t0, 5.0),
+        measurement_row(t0 + HOUR_LATER, 6.0, qc_note="kein Messwert geliefert"),
+    ])
+    await db.commit()
+    nulls = (await db.execute(text(
+        "SELECT COUNT(*) FROM measurements WHERE wind_speed_ms IS NULL"
+    ))).scalar_one()
+    assert nulls == 0
 
 
 async def test_power_at_interpolation(db, clean, reference):
@@ -127,57 +134,53 @@ async def test_power_at_interpolation(db, clean, reference):
     assert await curve_at(30.0) == 0.0           # beyond the curve → no operation
 
 
-async def test_hourly_energy_excludes_suspect(db, clean, reference, measurement_row, hour):
+async def test_hourly_energy_covers_all_rows(db, clean, reference, measurement_row, hour):
+    """Every stored hour feeds the energy math (the store holds only values)."""
     t0 = hour
     await repo.upsert_measurements(db, [
-        measurement_row(t0, 8.0, quality="ok"),
-        measurement_row(t0 + HOUR_LATER, 8.0, quality="suspect"),
+        measurement_row(t0, 8.0),
+        measurement_row(t0 + HOUR_LATER, 6.0, qc_note="kein Messwert geliefert"),
     ])
     rows = (await db.execute(
         text("SELECT speed_hub_ms, energy_kwh FROM hourly_energy"
              " WHERE mast_id = 'TEST-M'"))).all()
-    assert len(rows) == 1
-    hub_speed, energy_kwh = rows[0]
+    assert len(rows) == 2
     # α = 0.2 → hub factor (140/100)^0.2 ≈ 1.0696
-    assert hub_speed == pytest.approx(8.0 * (140.0 / 100.0) ** 0.2)
-    assert 0.0 < energy_kwh < 3600.0 * (140.0 / 100.0) ** 0.2
+    speeds = sorted(s for s, _ in rows)
+    assert speeds == pytest.approx(sorted(
+        [v * (140.0 / 100.0) ** 0.2 for v in (6.0, 8.0)]
+    ))
 
     aep = await repo.aep_trailing_12m(db)
-    assert aep["usable_hours"] == 1
-    assert aep["aep_gross_kwh"] == pytest.approx(energy_kwh)
+    assert aep["usable_hours"] == 2
+    assert aep["aep_gross_kwh"] > 0
 
 
 async def test_daily_series_and_coverage(db, clean, reference, measurement_row, hour):
-    # 12:00 anchor — a 4 h span crossing midnight would split into two days
-    # and flake for runs between 21:00 and 24:00 UTC.
-    t0 = hour.replace(hour=12)
+    # 12:00 anchor, one day back — the 4 h span stays on one UTC day and the
+    # gap day (+1) lands inside the 30-day daily window.
+    t0 = (hour - timedelta(days=1)).replace(hour=12)
     await repo.upsert_measurements(db, [
-        measurement_row(t0, 8.0, quality="ok"),
-        measurement_row(t0 + HOUR_LATER, 8.0, quality="ok"),
-        measurement_row(t0 + 2 * HOUR_LATER, None, quality="malformed"),
-        measurement_row(t0 + 3 * HOUR_LATER, 9.0, quality="ok"),
-        # a day with zero ok hours must still appear (a gap that carries QC counts)
-        measurement_row(t0 + 48 * HOUR_LATER, -0.5, quality="suspect"),
+        measurement_row(t0, 8.0),
+        measurement_row(t0 + HOUR_LATER, 8.0),
+        # an interpolated hour keeps counting (the store only has valid values)
+        measurement_row(t0 + 2 * HOUR_LATER, 7.0, qc_note="kein Messwert geliefert"),
+        measurement_row(t0 + 3 * HOUR_LATER, 9.0),
+        # a day with zero stored hours must still appear (as an energy gap)
+        measurement_row(t0 + 48 * HOUR_LATER, 7.0),
     ])
     daily = await repo.daily_series(db)
     day = next(d for d in daily if d["day"] == t0.date())
-    gap_day = next(d for d in daily if d["day"] == (t0 + timedelta(days=2)).date())
-    assert day["hours"] == 3
-    assert day["mean_wind_ms"] == pytest.approx((8.0 + 8.0 + 9.0) / 3)
-    assert day["suspect_hours"] == 0
-    assert day["missing_hours"] == 1
+    gap_day = next(d for d in daily if d["day"] == (t0 + timedelta(days=1)).date())
+    assert day["hours"] == 4
+    assert day["mean_wind_ms"] == pytest.approx((8.0 + 8.0 + 7.0 + 9.0) / 4)
     assert day["energy_kwh"] is not None
     assert gap_day["energy_kwh"] is None
     assert gap_day["hours"] is None
-    assert gap_day["suspect_hours"] == 1
-    assert gap_day["missing_hours"] == 0
 
     coverage = await repo.coverage(db)
     assert coverage["total_hours"] == 5
-    assert coverage["usable_hours"] == 3
-    assert coverage["suspect_hours"] == 1
-    assert coverage["missing_hours"] == 0
-    assert coverage["malformed_hours"] == 1
+    assert coverage["interpolated_hours"] == 1
     assert coverage["expected_hours"] == 49   # contiguous span: 48 h + first hour
     assert coverage["absent_hours"] == 44     # 49 expected - 5 stored
     assert coverage["max_gap_hours"] == 44    # 45 h between the day neighbours
@@ -200,10 +203,10 @@ async def test_wind_series_trailing_window(db, clean, reference, measurement_row
     t0 = hour
     await repo.upsert_measurements(db, [
         measurement_row(t0 - 3 * HOUR_LATER, 5.0),
-        measurement_row(t0 - 2 * HOUR_LATER, 83.0, quality="suspect"),
-        measurement_row(t0 - HOUR_LATER, None, quality="missing"),
-        # t0 itself gets no row: the absent hour must surface as an empty bucket
+        measurement_row(t0 - 2 * HOUR_LATER, 6.0),
+        # t0 - 1 h and t0 itself get no row: absent hours are empty buckets
     ])
+    await db.commit()
     series = await repo.wind_series(db, days=1)
     assert [p["timestamp"] for p in series] == \
         sorted(p["timestamp"] for p in series)      # oldest first
@@ -214,50 +217,40 @@ async def test_wind_series_trailing_window(db, clean, reference, measurement_row
     assert empty["mean_wind_ms"] is None
     assert empty["min_wind_ms"] is None
     assert empty["max_wind_ms"] is None
-    assert (empty["ok_hours"], empty["suspect_hours"],
-            empty["missing_hours"], empty["malformed_hours"]) == (0, 0, 0, 0)
+    assert empty["interpolated_hours"] == 0
+    assert empty["qc_note"] is None
+    assert empty["wind_speed_raw"] is None
 
     ok = by_ts[t0 - 3 * HOUR_LATER]
     assert ok["mean_wind_ms"] == pytest.approx(5.0)
-    assert ok["ok_hours"] == 1
-
-    suspect = by_ts[t0 - 2 * HOUR_LATER]
-    assert suspect["max_wind_ms"] == pytest.approx(83.0)   # suspect value is a value
-    assert (suspect["ok_hours"], suspect["suspect_hours"]) == (0, 1)
-
-    missing = by_ts[t0 - HOUR_LATER]
-    assert missing["mean_wind_ms"] is None
-    assert missing["missing_hours"] == 1
+    assert ok["interpolated_hours"] == 0
 
 
-async def test_wind_series_day_and_week_buckets(db, clean, reference, measurement_row, hour):
-    # 12:00 anchor — the four hours stay on one UTC day (see sibling tests)
-    t0 = hour.replace(hour=12)
-    monday = (t0 - timedelta(days=t0.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0)
+async def test_wind_series_carries_interpolation_notes(
+    db, clean, reference, measurement_row, hour
+):
+    """Interpolated hours surface per bucket: count + (aggregated) reasons."""
+    # 12:00 anchor, one day back — all four hours sit inside the 24 h window
+    t0 = (hour - timedelta(days=1)).replace(hour=12)
     await repo.upsert_measurements(db, [
-        measurement_row(t0 - 3 * HOUR_LATER, 5.0),
-        measurement_row(t0 - 2 * HOUR_LATER, 83.0, quality="suspect"),
-        measurement_row(t0 - HOUR_LATER, -1.0, quality="suspect"),
-        measurement_row(t0, None, quality="missing"),
-        measurement_row(monday - timedelta(days=3), 3.0),   # previous ISO week
+        measurement_row(t0 - HOUR_LATER, 5.0),
+        measurement_row(t0, 6.0, qc_note="kein Messwert geliefert"),
+        measurement_row(t0 + HOUR_LATER, 7.0, qc_note="negativer Messwert"),
     ])
+    await db.commit()
 
-    daily = await repo.wind_series(db, days=2, resolution="day")
+    hourly = await repo.wind_series(db, days=1)
+    by_ts = {p["timestamp"]: p for p in hourly}
+    assert by_ts[t0]["interpolated_hours"] == 1
+    assert by_ts[t0]["qc_note"] == "kein Messwert geliefert"
+    # the rejected original of the interpolated hour travels with the bucket
+    assert by_ts[t0]["wind_speed_raw"] == "6.0"
+
+    daily = await repo.wind_series(db, days=1, resolution="day")
     day = next(p for p in daily if p["timestamp"].date() == t0.date())
-    assert day["mean_wind_ms"] == pytest.approx((5.0 + 83.0 - 1.0) / 3)
-    assert day["min_wind_ms"] == pytest.approx(-1.0)   # original values feed min/max
-    assert day["max_wind_ms"] == pytest.approx(83.0)
-    assert (day["ok_hours"], day["suspect_hours"], day["missing_hours"]) == (1, 2, 1)
-
-    weekly = await repo.wind_series(db, days=14, resolution="week")
-    by_ts = {p["timestamp"]: p for p in weekly}
-    this_week = by_ts[monday]
-    assert (this_week["ok_hours"], this_week["suspect_hours"],
-            this_week["missing_hours"]) == (1, 2, 1)
-    last_week = by_ts[monday - timedelta(days=7)]
-    assert last_week["mean_wind_ms"] == pytest.approx(3.0)
-    assert last_week["ok_hours"] == 1
+    assert day["interpolated_hours"] == 2
+    assert day["qc_note"] == "kein Messwert geliefert; negativer Messwert"
+    assert day["wind_speed_raw"] == "6.0; 7.0"   # rejected originals aggregated
 
 
 async def test_wind_rose_matches_hand_computed_sectors(
@@ -296,6 +289,118 @@ async def test_wind_rose_matches_hand_computed_sectors(
     assert by_direction["E"]["degrees"] == 90
 
 
+async def test_interpolate_gaps_fills_absent_hours(
+    db, clean, reference, measurement_row, hour
+):
+    t0 = hour.replace(hour=12)
+    await repo.upsert_measurements(db, [
+        measurement_row(t0, 2.0),
+        measurement_row(t0 + 4 * HOUR_LATER, 6.0),
+    ])
+    await repo.interpolate_gaps(db, [], mast_id="TEST-M")
+    rows = (await db.execute(
+        text("SELECT wind_speed_ms, qc_note, version, updated_at, wind_dir_deg"
+             " FROM measurements WHERE mast_id = 'TEST-M' ORDER BY timestamp")
+    )).all()
+    assert [r[0] for r in rows] == [2.0, 3.0, 4.0, 5.0, 6.0]   # linear in between
+    assert all(r[1] == "Stunde nicht geliefert" for r in rows[1:3+1])
+    # absent rows inherit the revision stamp of the bounding anchor (the edge
+    # lead), so the sync watermark never runs ahead of the API
+    assert all(r[2] == 1 and r[3] == t0 + 4 * HOUR_LATER for r in rows[1:3+1])
+    assert all(r[4] == 180 for r in rows[1:3+1])
+
+    # idempotent: a replay does not add or shift anything
+    await repo.interpolate_gaps(db, [], mast_id="TEST-M")
+    rows2 = (await db.execute(
+        text("SELECT COUNT(*) FROM measurements"))).scalar_one()
+    assert rows2 == len(rows)
+
+
+async def test_interpolate_defect_hour_from_payload(
+    db, clean, reference, measurement_row, hour
+):
+    t0 = hour.replace(hour=12)
+    bad = t0 + HOUR_LATER
+    await repo.upsert_measurements(db, [
+        measurement_row(t0, 2.0, updated_at=t0),
+        measurement_row(t0 + 2 * HOUR_LATER, 8.0, updated_at=t0 + 2 * HOUR_LATER),
+    ])
+    await repo.interpolate_gaps(db, [{
+        "ts": bad.isoformat(),
+        "note": "kein Messwert geliefert",
+        "updated_at": bad.isoformat(),
+        "version": 3,
+        "wind_speed_raw": "-999.0",
+        "timestamp_raw": bad.isoformat(),
+        "wind_dir": 200,
+    }], mast_id="TEST-M")
+    wind_speed_ms, note, version, updated_at, raw, raw_ts, wind_dir = (
+        await db.execute(text(
+            "SELECT wind_speed_ms, qc_note, version, updated_at,"
+            " wind_speed_raw, timestamp_raw, wind_dir_deg FROM measurements"
+            " WHERE mast_id = 'TEST-M' AND timestamp = :t"
+        ), {"t": bad})
+    ).one()
+    assert wind_speed_ms == pytest.approx(5.0)
+    assert note == "kein Messwert geliefert"
+    # the rejected revision stamps the interpolated row
+    assert version == 3 and updated_at == bad
+    assert raw == "-999.0" and raw_ts == bad.isoformat()
+    assert wind_dir == 200
+
+
+async def test_interpolate_skips_superseded_defects(
+    db, clean, reference, measurement_row, hour
+):
+    """A stored real revision newer than the defect payload stays untouched."""
+    t0 = hour.replace(hour=12)
+    bad = t0 + HOUR_LATER
+    await repo.upsert_measurements(db, [
+        measurement_row(t0, 2.0, updated_at=t0),
+        # the hour real-good, newer than the defect revision below
+        measurement_row(bad, 9.0, version=4, updated_at=bad + timedelta(hours=1)),
+        measurement_row(t0 + 2 * HOUR_LATER, 8.0, updated_at=t0 + 2 * HOUR_LATER),
+    ])
+    await repo.interpolate_gaps(db, [{
+        "ts": bad.isoformat(),
+        "note": "negativer Messwert",
+        "updated_at": bad.isoformat(),
+        "version": 3,
+        "wind_speed_raw": "-1.0",
+        "timestamp_raw": bad.isoformat(),
+        "wind_dir": 200,
+    }], mast_id="TEST-M")
+    wind_speed_ms, note = (await db.execute(text(
+        "SELECT wind_speed_ms, qc_note FROM measurements"
+        " WHERE mast_id = 'TEST-M' AND timestamp = :t"
+    ), {"t": bad})).one()
+    assert wind_speed_ms == pytest.approx(9.0)
+    assert note is None
+
+
+async def test_real_revision_replaces_interpolation(
+    db, clean, reference, measurement_row, hour
+):
+    """Real data always wins, even when its own stamp is older than the fill."""
+    t0 = hour.replace(hour=12)
+    gap = t0 + HOUR_LATER
+    await repo.upsert_measurements(db, [
+        measurement_row(t0, 2.0, updated_at=t0),
+        measurement_row(t0 + 2 * HOUR_LATER, 8.0, updated_at=t0 + 2 * HOUR_LATER),
+    ])
+    await repo.interpolate_gaps(db, [], mast_id="TEST-M")
+    await repo.upsert_measurements(db, [
+        # the late real delivery carries the hour's own (older) stamp
+        measurement_row(gap, 9.0, version=1, updated_at=gap),
+    ])
+    wind_speed_ms, note = (await db.execute(text(
+        "SELECT wind_speed_ms, qc_note FROM measurements"
+        " WHERE mast_id = 'TEST-M' AND timestamp = :t"
+    ), {"t": gap})).one()
+    assert wind_speed_ms == pytest.approx(9.0)
+    assert note is None
+
+
 async def test_ingest_runs_recent(db, clean, hour):
     t0 = hour
     for i, status in enumerate(["ok", "partial", "ok"]):
@@ -303,17 +408,17 @@ async def test_ingest_runs_recent(db, clean, hour):
             db, started_at=t0 + timedelta(minutes=i),
             finished_at=t0 + timedelta(minutes=i + 1),
             status=status, pages=i, inserted=i, updated=0,
-            qc_suspect=2 * i if status == "partial" else 0,
+            interpolated=2 * i if status == "partial" else 0,
         )
     await db.commit()
 
     runs = await repo.ingest_runs_recent(db, limit=2)
     assert [r["status"] for r in runs] == ["ok", "partial"]     # newest first
-    assert runs[1]["qc_suspect"] == 2
-    assert runs[0]["qc_suspect"] == 0
+    assert runs[1]["interpolated"] == 2
+    assert runs[0]["interpolated"] == 0
     assert {"id", "started_at", "finished_at", "status", "pages", "inserted",
-            "updated", "frame_from", "frame_to", "qc_missing", "qc_suspect",
-            "qc_malformed", "max_gap_hours", "detail"} <= set(runs[0])
+            "updated", "frame_from", "frame_to", "interpolated",
+            "max_gap_hours", "detail"} <= set(runs[0])
     assert len(await repo.ingest_runs_recent(db, limit=10)) == 3
 
 

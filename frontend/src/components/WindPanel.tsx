@@ -1,57 +1,60 @@
 /** Wind panel — wind rose as a compact summary on top, speed chart as the
  * main view below. Drag the brush strip under the speed chart to zoom into
- * a sub-range (Chrome DevTools Network-tab style). QC info lives in the
- * tooltip, not as stacked bars on the chart. */
-import { memo, useMemo, useState } from "react";
-import {
-  Area,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  PolarAngleAxis,
-  PolarGrid,
-  PolarRadiusAxis,
-  Radar,
-  RadarChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+ * a sub-range (Chrome DevTools Network-tab style). The DB only holds valid
+ * values; interpolated hours appear as amber dots with their reason in the
+ * tooltip (qc_note from the ingest pipeline).
+ *
+ * Charts are hand-rolled SVG via visx primitives (see chart/helpers.ts):
+ * whole series render as single path elements (computed once per data
+ * change), and hover resolves to an index by scale inversion, so pointer
+ * handling stays O(log n) even at a full year of hourly buckets. */
+import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { AxisBottom, AxisLeft } from "@visx/axis";
+import { scaleLinear } from "@visx/scale";
+import { area as d3Area, line as d3Line } from "@visx/vendor/d3-shape";
 
 import type { RoseSector, WindPoint, WindResponse } from "../api";
-import { useAnimateOnce } from "../useAnimateOnce";
 import { asBucket, asHours, asMs } from "../format";
-import type { ComponentProps } from "react";
+import { ChartTooltip } from "./chart/ChartTooltip";
+import { clampIndex, polarPoint, strideTicks } from "./chart/helpers";
+import { useChartSize } from "./chart/useChartSize";
 import { BrushStrip } from "./BrushStrip";
 
 const LINE = "#b45309";
-const QC_BAD = "#b91c1c"; // missing + malformed
-const QC_FAULTY = "#b45309"; // suspect
+const INTERPOLATED = "#f59e0b"; // filled gap hours
+const MUTED = "#667085";
+const GRID = "#e4e8ef";
+/** Whole-year hourly series render fine; above this, per-point dot markers
+ * stop being distinguishable anyway. */
+const DOT_LIMIT = 1_000;
+
+type Hover = { idx: number; left: number; top: number };
 
 /* Compass order N → NNW, i.e. clockwise, matching the server's 16 sectors. */
 const COMPASS = [
-  "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+  "N",
+  "NNE",
+  "NE",
+  "ENE",
+  "E",
+  "ESE",
+  "SE",
+  "SSE",
+  "S",
+  "SSW",
+  "SW",
+  "WSW",
+  "W",
+  "WNW",
+  "NW",
+  "NNW",
 ];
 const COMPASS_STEP = 360 / COMPASS.length;
-const COMPASS_TICKS = COMPASS.map((_, i) => i * COMPASS_STEP);
 
 /** Memoized: per-panel data references stay stable across unchanged polls,
  * so a metrics-only tick never reconciles either chart. */
 export const WindPanel = memo(function WindPanel({ wind }: { wind: WindResponse }) {
-  const animate = useAnimateOnce();
   const [zoomDomain, setZoomDomain] = useState<[string, string] | null>(null);
-
-  /* Bearings are index-derived over the full circle: the numeric angle axis
-   * maps 0° → top and runs clockwise, so each spoke lands on its exact
-   * compass bearing (a category axis would sit spokes off-center on a d3
-   * band scale; server degrees are truncated to integers). */
-  const rose = wind.rose.map((sector, i) => ({
-    ...sector,
-    bearing: i * COMPASS_STEP,
-  }));
-  const maxFreq = Math.max(1, ...rose.map((s) => s.frequency));
 
   const filteredSeries = useMemo(() => {
     if (!zoomDomain) return wind.series;
@@ -63,71 +66,14 @@ export const WindPanel = memo(function WindPanel({ wind }: { wind: WindResponse 
     <>
       <div className="wind-panel-row">
         <div className="chart chart-rose">
-          <ResponsiveContainer width="100%" height="100%">
-            <RadarChart data={rose} startAngle={90} endAngle={-270} outerRadius="75%">
-              <PolarGrid gridType="circle" />
-              <PolarAngleAxis
-                dataKey="bearing"
-                type="number"
-                domain={[0, 360]}
-                ticks={COMPASS_TICKS as unknown as ComponentProps<typeof PolarAngleAxis>["ticks"]}
-                tickFormatter={(deg: number) =>
-                  COMPASS[Math.round(deg / COMPASS_STEP) % COMPASS.length] ?? "N"
-                }
-              />
-              <PolarRadiusAxis domain={[0, maxFreq]} tick={false} axisLine={false} />
-              <Radar
-                dataKey="frequency"
-                stroke={LINE}
-                fill={LINE}
-                fillOpacity={0.4}
-                isAnimationActive={animate}
-              />
-              <Tooltip content={<RoseTooltip />} />
-            </RadarChart>
-          </ResponsiveContainer>
+          <WindRose rose={wind.rose} />
         </div>
         <div className="chart-column">
           <div className="chart chart-speed">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={filteredSeries}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="timestamp"
-                  tickFormatter={(ts: string) => asBucket(ts, wind.resolution)}
-                  minTickGap={28}
-                />
-                <YAxis width={40} tickFormatter={(v: number) => v.toFixed(0)} />
-                <Tooltip content={<SpeedTooltip resolution={wind.resolution} />} />
-                <Area
-                  dataKey={(p: WindPoint) =>
-                    p.min_wind_ms != null && p.max_wind_ms != null
-                      ? [p.min_wind_ms, p.max_wind_ms]
-                      : null
-                  }
-                  fill={LINE}
-                  fillOpacity={0.15}
-                  stroke="none"
-                  isAnimationActive={animate}
-                  name="Min/Max (Originalwerte)"
-                  legendType="none"
-                />
-                <Line
-                  dataKey="mean_wind_ms"
-                  name="Mittel (m/s)"
-                  stroke={LINE}
-                  dot={qcDot}
-                  isAnimationActive={animate}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
+            <WindSpeedChart series={filteredSeries} resolution={wind.resolution} />
           </div>
           <div className="brush-row">
-            <BrushStrip
-              data={wind.series}
-              zoomDomain={zoomDomain}
-              onZoomChange={setZoomDomain}
-            />
+            <BrushStrip data={wind.series} zoomDomain={zoomDomain} onZoomChange={setZoomDomain} />
             {zoomDomain && (
               <button className="reset-zoom" onClick={() => setZoomDomain(null)}>
                 ×
@@ -140,35 +86,301 @@ export const WindPanel = memo(function WindPanel({ wind }: { wind: WindResponse 
   );
 });
 
-/** Per-point QC marker on the speed chart. Missing wins over malformed wins
- * over suspect — the worst issue in the bucket drives the color/shape. */
-function qcDot(props: { cx?: number; cy?: number; payload?: WindPoint }) {
-  const { cx, cy, payload } = props;
-  if (cx == null || cy == null || !payload) return null;
-  if (payload.mean_wind_ms == null || payload.missing_hours > 0) {
-    return <circle cx={cx} cy={cy} r={3.5} fill={QC_BAD} stroke="#fff" strokeWidth={1} />;
-  }
-  if (payload.malformed_hours > 0) {
-    return <rect x={cx - 3} y={cy - 3} width={6} height={6} fill={QC_BAD} stroke="#fff" strokeWidth={1} />;
-  }
-  if (payload.suspect_hours > 0) {
-    return <circle cx={cx} cy={cy} r={3} fill={QC_FAULTY} stroke="#fff" strokeWidth={1} />;
-  }
-  return null;
+/* Rose column layout — Bearings are index-derived over the full circle so
+ * each spoke lands on its exact compass bearing; the numeric angle maps
+ * 0° → top and runs clockwise. */
+function WindRose({ rose }: { rose: RoseSector[] }) {
+  const { ref, width, height } = useChartSize();
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [hover, setHover] = useState<Hover | null>(null);
+
+  const cx = width / 2;
+  const cy = height / 2;
+  const outer = (Math.min(width, height) / 2) * 0.75;
+  const maxFreq = Math.max(1, ...rose.map((s) => s.frequency));
+  const radius = (v: number) => (v / maxFreq) * outer;
+
+  const onMove = (e: ReactPointerEvent) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const left = e.clientX - rect.left;
+    const top = e.clientY - rect.top;
+    const deg = ((Math.atan2(left - cx, -(top - cy)) * 180) / Math.PI + 360) % 360;
+    setHover({
+      idx: clampIndex(Math.round(deg / COMPASS_STEP), COMPASS.length),
+      left,
+      top,
+    });
+  };
+
+  /* Rings at quarter fractions of the outer radius, spokes per sector. */
+  const rings = [0.25, 0.5, 0.75, 1];
+  const polygon = rose
+    .map((sector, i) => polarPoint(cx, cy, radius(sector.frequency), i * COMPASS_STEP))
+    .map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+    .join(" ");
+
+  return (
+    <div ref={ref} className="chart-inner">
+      {width > 0 && (
+        <svg
+          ref={svgRef}
+          width={width}
+          height={height}
+          onPointerMove={onMove}
+          onPointerLeave={() => setHover(null)}
+        >
+          {rings.map((frac) => (
+            <circle
+              key={frac}
+              cx={cx}
+              cy={cy}
+              r={outer * frac}
+              fill="none"
+              stroke={GRID}
+              strokeDasharray="3 3"
+            />
+          ))}
+          {rose.map((_, i) => {
+            const tip = polarPoint(cx, cy, outer, i * COMPASS_STEP);
+            return (
+              <line
+                key={i}
+                x1={cx}
+                y1={cy}
+                x2={tip.x}
+                y2={tip.y}
+                stroke={GRID}
+                strokeDasharray="3 3"
+              />
+            );
+          })}
+          {rose.length > 0 && (
+            <polygon
+              points={polygon}
+              fill={LINE}
+              fillOpacity={0.4}
+              stroke={LINE}
+              strokeWidth={1.5}
+            />
+          )}
+          {rose.map((_, i) => {
+            const deg = i * COMPASS_STEP;
+            const p = polarPoint(cx, cy, outer + 13, deg);
+            return (
+              <text
+                key={deg}
+                x={p.x}
+                y={p.y}
+                textAnchor={deg === 0 || deg === 180 ? "middle" : deg < 180 ? "start" : "end"}
+                fontSize={11}
+                fill={MUTED}
+                dy={deg === 0 ? -1 : deg === 180 ? 8 : 3.5}
+              >
+                {COMPASS[i]}
+              </text>
+            );
+          })}
+        </svg>
+      )}
+      {hover && width > 0 && rose[hover.idx] && (
+        <ChartTooltip left={hover.left} top={hover.top} width={width}>
+          <RoseTooltipContent sector={rose[hover.idx]!} />
+        </ChartTooltip>
+      )}
+    </div>
+  );
 }
 
-function RoseTooltip({
-  active,
-  payload,
+function WindSpeedChart({
+  series,
+  resolution,
 }: {
-  active?: boolean;
-  payload?: { payload: RoseSector }[];
+  series: WindPoint[];
+  resolution: WindResponse["resolution"];
 }) {
-  if (!active) return null;
-  const sector = payload?.[0]?.payload;
-  if (!sector) return null;
+  const { ref, width, height } = useChartSize();
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [hover, setHover] = useState<Hover | null>(null);
+
+  const margin = { top: 12, right: 12, bottom: 28, left: 40 };
+  const innerW = Math.max(0, width - margin.left - margin.right);
+  const innerH = Math.max(0, height - margin.top - margin.bottom);
+
+  const n = series.length;
+  const xScale = useMemo(
+    () => scaleLinear({ domain: [0, Math.max(0, n - 1)], range: [0, innerW] }),
+    [n, innerW],
+  );
+
+  /* Min/max band and mean set the y-extent; recharts drew the same auto domain. */
+  const yMax = Math.max(
+    1,
+    ...series.map((p) => p.max_wind_ms ?? p.mean_wind_ms ?? 0),
+    ...series.map((p) => p.mean_wind_ms ?? 0),
+  );
+  const yScale = useMemo(() => {
+    const s = scaleLinear({ domain: [0, yMax], range: [innerH, 0] });
+    return s.nice();
+  }, [yMax, innerH]);
+
+  const xTicks = useMemo(
+    () => strideTicks(n, innerW, resolution === "hour" ? 95 : 70),
+    [n, innerW, resolution],
+  );
+
+  const bandPath = useMemo(
+    () =>
+      d3Area<WindPoint>()
+        .defined((p) => p.min_wind_ms != null && p.max_wind_ms != null)
+        .x((_p, i) => xScale(i))
+        .y0((p) => yScale(p.min_wind_ms!))
+        .y1((p) => yScale(p.max_wind_ms!))(series) ?? "",
+    [xScale, yScale, series],
+  );
+  const meanPath = useMemo(
+    () =>
+      d3Line<WindPoint>()
+        .defined((p) => p.mean_wind_ms != null)
+        .x((_p, i) => xScale(i))
+        .y((p) => yScale(p.mean_wind_ms!))(series) ?? "",
+    [xScale, yScale, series],
+  );
+
+  const ready = width > 0 && n > 0;
+
+  const onMove = (e: ReactPointerEvent) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const px = e.clientX - rect.left - margin.left;
+    if (px < -10 || px > innerW + 10) {
+      setHover(null);
+      return;
+    }
+    const idx = clampIndex(xScale.invert(px), n);
+    const point = series[idx]!;
+    /* Anchor the box above the min/max band when present, else the mean. */
+    const anchor = point.max_wind_ms ?? point.mean_wind_ms ?? yMax;
+    setHover({ idx, left: xScale(idx) + margin.left, top: yScale(anchor) + margin.top });
+  };
+
+  const hovered = hover != null ? (series[hover.idx] ?? null) : null;
+  const interpDots: { i: number; y: number; ts: string }[] =
+    n <= DOT_LIMIT
+      ? series.flatMap((p, i) =>
+          p.interpolated_hours > 0 && p.mean_wind_ms != null
+            ? [{ i, y: yScale(p.mean_wind_ms), ts: p.timestamp }]
+            : [],
+        )
+      : [];
+
   return (
-    <div className="tooltip">
+    <div ref={ref} className="chart-inner">
+      {ready && (
+        <svg ref={svgRef} width={width} height={height}>
+          <g transform={`translate(${margin.left},${margin.top})`}>
+            <g>
+              {yScale.ticks(4).map((t) => (
+                <line
+                  key={`h${t}`}
+                  x1={0}
+                  x2={innerW}
+                  y1={yScale(t)}
+                  y2={yScale(t)}
+                  stroke={GRID}
+                  strokeDasharray="3 3"
+                />
+              ))}
+              {xTicks.map((i) => (
+                <line
+                  key={`v${i}`}
+                  x1={xScale(i)}
+                  x2={xScale(i)}
+                  y1={0}
+                  y2={innerH}
+                  stroke={GRID}
+                  strokeDasharray="3 3"
+                />
+              ))}
+            </g>
+            <path d={bandPath} fill={LINE} fillOpacity={0.15} stroke="none" />
+            <path d={meanPath} fill="none" stroke={LINE} strokeWidth={2} />
+            {interpDots.map(({ i, y, ts }) => (
+              <circle
+                key={ts}
+                cx={xScale(i)}
+                cy={y}
+                r={3.5}
+                fill={INTERPOLATED}
+                stroke="#fff"
+                strokeWidth={1}
+              />
+            ))}
+            <AxisBottom
+              top={innerH}
+              scale={xScale}
+              tickValues={xTicks}
+              tickFormat={(v) => asBucket(series[Number(v)]?.timestamp ?? "", resolution)}
+              tickLength={4}
+              stroke={GRID}
+              tickStroke={GRID}
+              tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
+            />
+            <AxisLeft
+              scale={yScale}
+              tickFormat={(v) => Number(v).toFixed(0)}
+              tickLength={4}
+              stroke={GRID}
+              tickStroke={GRID}
+              tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
+            />
+            {hover && (
+              <g pointerEvents="none">
+                <line
+                  x1={xScale(hover.idx)}
+                  x2={xScale(hover.idx)}
+                  y1={0}
+                  y2={innerH}
+                  stroke={MUTED}
+                  strokeDasharray="3 3"
+                  opacity={0.5}
+                />
+                {hovered?.mean_wind_ms != null && (
+                  <circle
+                    cx={xScale(hover.idx)}
+                    cy={yScale(hovered.mean_wind_ms)}
+                    r={4}
+                    fill={LINE}
+                    stroke="#fff"
+                    strokeWidth={1.5}
+                  />
+                )}
+              </g>
+            )}
+            <rect
+              x={0}
+              y={0}
+              width={innerW}
+              height={innerH}
+              fill="transparent"
+              onPointerMove={onMove}
+              onPointerLeave={() => setHover(null)}
+            />
+          </g>
+        </svg>
+      )}
+      {hovered && (
+        <ChartTooltip left={hover!.left} top={hover!.top} width={width}>
+          <SpeedTooltipContent point={hovered} resolution={resolution} />
+        </ChartTooltip>
+      )}
+    </div>
+  );
+}
+
+function RoseTooltipContent({ sector }: { sector: RoseSector }) {
+  return (
+    <>
       <div className="tooltip-title">
         {sector.direction} ({sector.degrees}°)
       </div>
@@ -176,35 +388,33 @@ function RoseTooltip({
         Verwertbare Stunden: <strong>{asHours(sector.frequency)}</strong>
       </div>
       <div>Mittlere Geschwindigkeit: {asMs(sector.mean_speed_ms)} m/s</div>
-    </div>
+    </>
   );
 }
 
-function SpeedTooltip({
-  active,
-  payload,
+function SpeedTooltipContent({
+  point,
   resolution,
 }: {
-  active?: boolean;
-  payload?: { payload: WindPoint }[];
-  resolution: "hour" | "day" | "week";
+  point: WindPoint;
+  resolution: WindResponse["resolution"];
 }) {
-  if (!active) return null;
-  const point = payload?.[0]?.payload;
-  if (!point) return null;
   return (
-    <div className="tooltip">
+    <>
       <div className="tooltip-title">{asBucket(point.timestamp, resolution)}</div>
       <div>
         Mittel: <strong>{asMs(point.mean_wind_ms)} m/s</strong>
       </div>
       <div>
-        Min / Max (Originalwerte): {asMs(point.min_wind_ms)} / {asMs(point.max_wind_ms)} m/s
+        Min / Max: {asMs(point.min_wind_ms)} / {asMs(point.max_wind_ms)} m/s
       </div>
-      <div>
-        QC: {point.suspect_hours} verdächtig · {point.missing_hours} ohne Wert ·{" "}
-        {point.malformed_hours} fehlerhaft
-      </div>
-    </div>
+      {point.interpolated_hours > 0 && (
+        <div className="interp-note">
+          {asHours(point.interpolated_hours)} h interpoliert
+          {point.qc_note ? ` (${point.qc_note})` : ""}
+          {point.wind_speed_raw ? ` · Original: ${point.wind_speed_raw}` : ""}
+        </div>
+      )}
+    </>
   );
 }

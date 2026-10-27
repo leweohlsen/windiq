@@ -59,9 +59,7 @@ class IngestRunOut(BaseModel):
     updated: int
     frame_from: datetime | None
     frame_to: datetime | None
-    qc_missing: int
-    qc_suspect: int
-    qc_malformed: int
+    interpolated: int
     max_gap_hours: int | None
     detail: str | None
 
@@ -80,12 +78,9 @@ class CoverageOut(BaseModel):
     from_ts: datetime | None
     to_ts: datetime | None
     total_hours: int
-    usable_hours: int
-    suspect_hours: int
-    missing_hours: int
-    malformed_hours: int
     expected_hours: int
     absent_hours: int
+    interpolated_hours: int
     max_gap_hours: int | None
 
 
@@ -141,12 +136,10 @@ class MetricsOut(BaseModel):
 
 class DailyPointOut(BaseModel):
     day: date
-    energy_kwh: float | None   # NULL → day without ok hours (gap)
+    energy_kwh: float | None   # NULL → day without stored hours (gap)
     hours: int | None
     mean_wind_ms: float | None
     max_wind_ms: float | None
-    suspect_hours: int
-    missing_hours: int
 
 
 class WindPointOut(BaseModel):
@@ -154,10 +147,10 @@ class WindPointOut(BaseModel):
     mean_wind_ms: float | None
     min_wind_ms: float | None
     max_wind_ms: float | None
-    ok_hours: int
-    suspect_hours: int
-    missing_hours: int
-    malformed_hours: int
+    interpolated_hours: int
+    qc_note: str | None
+    # Rejected originals of the interpolated rows (as received, audit)
+    wind_speed_raw: str | None
 
 
 class RoseSectorOut(BaseModel):
@@ -278,7 +271,7 @@ async def daily(days: int = 90) -> list[DailyPointOut]:
 async def wind(
     days: int = 2, resolution: Literal["hour", "day", "week"] = "hour"
 ) -> WindOut:
-    """Per-bucket speed stats + QC counts and the 30-day 16-sector wind rose."""
+    """Per-bucket speed stats + interpolation notes and the 30-day wind rose."""
     capped = min(max(days, 1), WIND_DAYS_CAP)
     async with SessionLocal() as s:
         series = await repo.wind_series(s, days=capped, resolution=resolution)

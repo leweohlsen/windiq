@@ -83,15 +83,17 @@ lives there (`windiq/retry.py`):
 - **Error journaling is itself guarded:** `journal_error` writes the
   `error` row in its own transaction and swallows its own failures — a
   broken DB cannot turn journaling into a second crash.
-- **Bad data is contained per row, not per run:** malformed rows are
-  dead-lettered (loud log, NULL value stored, run continues); a page with
-  > 30 % `suspect` rows flips the run to `partial` — that pattern signals
-  an API change, not dirty data.
+- **Bad data is contained per hour, not per run:** rejected hours are not
+  stored at all — the run continues and the end-of-run interpolation fill
+  replaces them with a usable value plus a persisted reason (`qc_note`); a
+  page with > 30 % rejected rows flips the run to `partial` — that pattern
+  signals an API change, not dirty data.
 - **Raw values kept for forensics:** `timestamp_raw`, `wind_speed_raw`
   store the original strings next to the canonical values — recovery and
-  audit need no refetch.
-- **Schema-level last line:** the `measurements_qc_values` CHECK constraint
-  rejects any value/quality pairing that app code would let slip.
+  audit need no refetch. For interpolated hours they show what was rejected.
+- **Schema-level last line:** `wind_speed_ms` is NOT NULL — a value-less row
+  cannot exist in the store by construction; a regression in app code hits
+  the wall loudly instead of showing empty buckets downstream.
 
 ## Failed-delivery handling (taskiq-pg)
 

@@ -388,7 +388,7 @@ export const getWindUrl = (params?: WindParams,) => {
 }
 
 /**
- * Per-bucket speed stats + QC counts and the 30-day 16-sector wind rose.
+ * Per-bucket speed stats + interpolation notes and the 30-day wind rose.
  * @summary Wind
  */
 export const wind = async (params?: WindParams, options?: Parameters<typeof customFetch>[1]): Promise<WindOut> => {

@@ -13,7 +13,9 @@ The backend, worker and scheduler read WindIQ credentials from `backend/.env`. C
 `backend/.env.example` and fill in `WIQ_CLIENT_ID` and `WIQ_CLIENT_SECRET`.
 
 Source directories are bind-mounted. Backend changes reload through uvicorn `--reload`,
-frontend changes through Vite HMR. Rebuild with `--build` only after dependency changes.
+frontend changes through Vite HMR. After dependency changes, rebuild with `--build -V`:
+the `/app/.venv` and `/app/node_modules` volumes are anonymous, and without `-V`
+(`--renew-anon-volumes`) Docker keeps the stale ones and new packages never appear.
 `Ctrl-C` stops everything. `docker compose down` also removes the containers and keeps the
 `windiq-pgdata` volume.
 
@@ -89,8 +91,8 @@ Customization (auth, retries, timeouts) belongs in the handwritten facade in
 | --- | --- | --- |
 | GET | `/api/health` | liveness, database status, last ingest run, data age |
 | GET | `/api/metrics` | revenue chain (AEP gross/net, P50, P90), coverage, site parameters, data age |
-| GET | `/api/daily?days=` | daily energy, mean wind and QC counts (max 365 days) |
-| GET | `/api/wind?days=&resolution=` | per-bucket wind speed stats (mean/min/max over ok+suspect) + QC counts and 16-sector wind rose over 30 days (max 365 days; resolution: hour/day/week) |
+| GET | `/api/daily?days=` | daily energy and mean wind, every window day present (max 365 days) |
+| GET | `/api/wind?days=&resolution=` | per-bucket wind speed stats (mean/min/max) + interpolated-hours count/reasons/rejected originals and 16-sector wind rose over 30 days (max 365 days; resolution: hour/day/week) |
 | GET | `/api/ingest/runs?limit=` | recent ingest runs (max 50) |
 | POST | `/api/ingest/run?mode=sync\|backfill` | queue an ingest; returns `{queued: true}` immediately |
 

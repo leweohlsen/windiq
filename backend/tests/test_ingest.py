@@ -39,12 +39,12 @@ def _api_row(ts: str, wind_speed: Any, unit: str = "m/s", version: int = 1,
 PAGE1 = [
     _api_row("2026-01-01T00:00:00Z", 7.6),
     _api_row("2026-01-01T01:00:00Z", "8.1"),   # numeric string → ok
-    _api_row("2026-01-01T02:00:00Z", None),    # null → missing
-    _api_row("2026-01-01T03:00:00Z", -0.5),    # drift → suspect
+    _api_row("2026-01-01T02:00:00Z", None),    # null → defect (missing)
+    _api_row("2026-01-01T03:00:00Z", -0.5),    # drift → defect (negative)
 ]
 PAGE2 = [
     _api_row("2026-01-01T02:00:00+00:00", 9.4, version=2, minutes_after=90),
-    _api_row("2026-01-01T04:00:00Z", 30.0),    # > cut-out + margin → suspect
+    _api_row("2026-01-01T04:00:00Z", 30.0),    # > cut-out + margin → defect
     _api_row("2026-01-01T05:00:00Z", 20.0),
 ]
 
@@ -122,7 +122,7 @@ async def fake_client(clean_db):
 
 async def _run_row(db, ts: str):
     return (await db.execute(
-        text("SELECT wind_speed_ms, unit, quality, version, timestamp_raw"
+        text("SELECT wind_speed_ms, qc_note, version, timestamp_raw"
              " FROM measurements WHERE mast_id = 'TEST-M'"
              " AND timestamp = :t"),
         {"t": datetime.fromisoformat(ts.replace("Z", "+00:00"))},
@@ -130,47 +130,58 @@ async def _run_row(db, ts: str):
 
 
 async def _db_counts(db) -> tuple[int, dict]:
-    rows = (await db.execute(
-        text("SELECT quality, COUNT(*) FROM measurements"
-             " GROUP BY quality ORDER BY quality"))).all()
-    counts = {quality: n for quality, n in rows}
-    total = sum(counts.values())
-    return total, counts
+    row = (await db.execute(
+        text("SELECT COUNT(*) FILTER (WHERE qc_note IS NULL) AS measured,"
+             " COUNT(*) FILTER (WHERE qc_note IS NOT NULL) AS interpolated,"
+             " COUNT(*) FILTER (WHERE wind_speed_ms IS NULL) AS invalid"
+             " FROM measurements"))).mappings().one()
+    total = row["measured"] + row["interpolated"]
+    return total, row
 
 
 async def test_backfill_is_idempotent(fake_client):
     first = await backfill.run_backfill(client=fake_client)
-    assert first["status"] == "partial"   # page2: 2/3 suspect rows > 30 %
-    assert first["inserted"] == 6 and first["updated"] == 1
+    assert first["status"] == "partial"   # page2: 1/3 defected > 30 %
+    assert first["inserted"] == 4 and first["updated"] == 0
+    assert first["interpolated"] == 3     # 02Z missing · 03Z negative · 04Z cut-out
 
     async with SessionLocal() as db:
         total, counts = await _db_counts(db)
-        assert total == 6
-        # the 02Z hour arrived missing (v1) and was revised to ok (v2) —
-        # stored state is ok; the run journal still shows the defect source
-        assert counts == {"ok": 4, "suspect": 2}   # no missing row stored at all
+        assert total == 6                       # 00Z…05Z, every hour present
+        assert counts["measured"] == 4
+        assert counts["interpolated"] == 2      # 03Z + 04Z recharged by the fill
+        assert counts["invalid"] == 0           # the store only holds values
 
-        wind_speed_ms, unit, quality, version, timestamp_raw = await _run_row(
+        # the 02Z hour arrived missing (v1) and was revised to ok (v2) —
+        # stored state is ok; the defect payload never supersedes the revision
+        wind_speed_ms, qc_note, version, timestamp_raw = await _run_row(
             db, "2026-01-01T02:00:00Z")
         assert wind_speed_ms == pytest.approx(9.4)   # newest revision wins
-        assert version == 2
+        assert qc_note is None and version == 2
         assert timestamp_raw == "2026-01-01T02:00:00+00:00"
+
+        # the rejected hours 03Z/04Z are linearly interpolated 02Z → 05Z
+        v03 = await _run_row(db, "2026-01-01T03:00:00Z")
+        v04 = await _run_row(db, "2026-01-01T04:00:00Z")
+        assert v03[0] == pytest.approx(9.4 + (20.0 - 9.4) / 3)
+        assert v04[0] == pytest.approx(9.4 + 2 * (20.0 - 9.4) / 3)
+        assert v03[1] == "negativer Messwert"
+        assert v04[1] == "Messwert über Cut-Out"
 
         # whole-run replay: identical revisions → nothing inserted or updated
         replay = await backfill.run_backfill(client=fake_client)
         assert replay["inserted"] == 0 and replay["updated"] == 0
 
         run_rows = (await db.execute(text(
-            "SELECT status, pages, inserted, updated, qc_missing,"
-            " qc_suspect, qc_malformed, max_gap_hours"
-            " FROM ingest_runs ORDER BY id"))).all()
+            "SELECT status, pages, inserted, updated, interpolated,"
+            " max_gap_hours FROM ingest_runs ORDER BY id"))).all()
         assert len(run_rows) == 2
-        for status, pages, inserted, updated, missing, suspect, malformed, gap in run_rows:
+        for status, pages, inserted, updated, interpolated, gap in run_rows:
             assert status == "partial"
             assert pages == 2
-            assert (inserted, updated) in {(6, 1), (0, 0)}
-            assert (missing, suspect, malformed) == (1, 2, 0)
-            assert gap == 0                # contiguous frame
+            assert (inserted, updated) in {(4, 0), (0, 0)}
+            assert interpolated == 3
+            assert gap == 0                # contiguous frame after the fill
 
 
 async def test_backfill_journals_reference_values(fake_client):
@@ -211,7 +222,7 @@ async def test_sync_uses_watermark_window_and_overlaps(fake_client):
 
 async def test_sync_from_empty_db_behaves_like_backfill(fake_client):
     result = await sync.run_sync(client=fake_client)
-    assert result["inserted"] == 6 and result["updated"] == 1
+    assert result["inserted"] == 4 and result["updated"] == 0
     assert fake_client.calls[0]["updated_since"] is None
 
 

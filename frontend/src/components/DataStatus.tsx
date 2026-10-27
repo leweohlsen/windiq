@@ -1,6 +1,6 @@
 /** Data status — last ingest run (status pill, finished at, duration,
- * inserted/updated, QC counts), data age with warning state, coverage %,
- * QC totals, max gap and a "sync now" button (plan phase 4). */
+ * inserted/updated, interpolated hours), data age with warning state,
+ * coverage %, max gap and a "sync now" button (plan phase 4). */
 import { useState } from "react";
 
 import { useQueueIngest } from "../api/generated/windIQAPI";
@@ -57,13 +57,8 @@ export function DataStatus({ metrics, runs }: { metrics: Metrics; runs: IngestRu
               </li>
               <li>
                 Seiten {lastRun.pages} · {lastRun.inserted} neu · {lastRun.updated} geändert
+                {lastRun.interpolated > 0 && ` · ${lastRun.interpolated} Stunden interpoliert`}
               </li>
-              {(lastRun.qc_missing > 0 || lastRun.qc_suspect > 0 || lastRun.qc_malformed > 0) && (
-                <li>
-                  QC des Laufs: {lastRun.qc_missing} ohne Wert · {lastRun.qc_suspect} verdächtig ·{" "}
-                  {lastRun.qc_malformed} fehlerhaft
-                </li>
-              )}
             </>
           ) : (
             <li>Noch kein Ingest-Lauf aufgezeichnet.</li>
@@ -89,13 +84,17 @@ export function DataStatus({ metrics, runs }: { metrics: Metrics; runs: IngestRu
             )}
           </li>
           <li>
-            Abdeckung: {asPercent(coverage.usable_hours, coverage.expected_hours)} % (
-            {asHours(coverage.usable_hours)} von {asHours(coverage.expected_hours)} h)
+            Abdeckung: {asPercent(coverage.total_hours, coverage.expected_hours)} % (
+            {asHours(coverage.total_hours)} von {asHours(coverage.expected_hours)} h)
           </li>
           <li>
-            QC-Statistik: {asHours(coverage.absent_hours)} nicht geliefert ·{" "}
-            {asHours(coverage.missing_hours)} ohne Wert · {asHours(coverage.suspect_hours)}{" "}
-            verdächtig · {asHours(coverage.malformed_hours)} fehlerhaft
+            {coverage.interpolated_hours > 0
+              ? `${asHours(coverage.interpolated_hours)} Stunden interpoliert`
+              : "Werte unverändert aus der Quelle"}
+            {coverage.absent_hours > 0 && ` · ${asHours(coverage.absent_hours)} h Randlücke`}
+          </li>
+          <li>
+            Maximale Lücke: {asHours(coverage.max_gap_hours)} h innerhalb der letzten 12 Monate
           </li>
           <li>
             Maximale Lücke: {asHours(coverage.max_gap_hours)} h innerhalb der letzten 12 Monate

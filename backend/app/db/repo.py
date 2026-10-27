@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Any, Iterable, Optional, TypedDict
 
@@ -14,16 +15,15 @@ class MeasurementRow(TypedDict):
     mast_id: str
     timestamp: datetime
     timestamp_raw: str
-    wind_speed_ms: Optional[float]
-    unit: str
+    wind_speed_ms: float
     wind_speed_raw: str
     wind_dir_deg: int
-    quality: str
+    qc_note: Optional[str]
     version: int
     updated_at: datetime
 
 
-def _upsert_stmt(model, values):
+def _upsert_stmt(model, values, *, real_wins: bool = False):
     """INSERT … ON CONFLICT DO UPDATE guarded by (updated_at, version).
 
     Stored rows are only touched when the incoming revision is newer —
@@ -32,13 +32,20 @@ def _upsert_stmt(model, values):
     never overwrite newer data. Every guarded model pairs `updated_at` with
     `version`. `fetched_at` always keeps its DB default (it tracks *our*
     reads).
+
+    `real_wins` relaxes the guard for measurements: an interpolated row is
+    our own synthesis, so *any* real API revision replaces it — even one
+    replayed with an older stamp that can no longer pass the guard itself.
     """
     stmt = pg_insert(model).values(values)
-    kwargs = {"where": or_(
+    guard = or_(
         model.updated_at < stmt.excluded.updated_at,
         and_(model.updated_at == stmt.excluded.updated_at,
              model.version < stmt.excluded.version),
-    )} if hasattr(model, "updated_at") else {}
+    ) if hasattr(model, "updated_at") else None
+    if real_wins:
+        guard = or_(guard, model.__table__.c.qc_note.is_not(None))
+    kwargs = {"where": guard} if guard is not None else {}
     return stmt.on_conflict_do_update(
         index_elements=[c.name for c in model.__table__.primary_key.columns],
         set_={c.name: stmt.excluded[c.name]
@@ -68,7 +75,7 @@ async def upsert_measurements(
     rows = list(keyed.values())
     inserted = updated = 0
     for i in range(0, len(rows), batch_size):
-        stmt = _upsert_stmt(Measurement, rows[i:i + batch_size])
+        stmt = _upsert_stmt(Measurement, rows[i:i + batch_size], real_wins=True)
         # xmax = 0 marks rows freshly inserted (a row updated here has a nonzero
         # xmax); rows skipped by the guard produce no output row at all.
         stmt = stmt.returning(text("(xmax = 0) AS fresh"))
@@ -77,6 +84,116 @@ async def upsert_measurements(
         inserted += sum(1 for v in verdicts if v)
         updated += sum(1 for v in verdicts if not v)
     return inserted, updated
+
+
+async def interpolate_gaps(
+    session: AsyncSession, defects: list[dict[str, Any]], *, mast_id: str
+) -> None:
+    """Fill hours without a usable value by linear interpolation — idempotently.
+
+    `defects` are this run's rejected hours (one dict per defected
+    `NormalizedHour`: ts, note, updated_at, version, wind_speed_raw,
+    timestamp_raw, wind_dir). The statement runs over the **whole stored
+    range** every ingest, so it self-heals: it fills hours the API never
+    delivered (reason "Stunde nicht geliefert"), recomputes previously
+    interpolated rows whose anchors changed (keeping their note), and writes
+    a defect hour only when its rejected revision is not superseded by an
+    already-stored real one. Anchors are real rows (`qc_note IS NULL`) only,
+    so interpolations never anchor on interpolations.
+
+    Interpolated rows carry the defect revision's (updated_at, version) —
+    safe for the sync watermark — or the bounding anchor's when the API never
+    delivered the hour. `upsert_measurements` lets any real revision replace
+    an interpolated row afterwards, so real data always wins eventually.
+    """
+    await session.execute(text("""
+        WITH bounds AS (
+            SELECT MIN(timestamp) AS lo, MAX(timestamp) AS hi FROM measurements
+        ), hours AS (
+            SELECT generate_series(lo, hi, interval '1 hour') AS ts FROM bounds
+        ), defects AS (
+            SELECT d.ts AS timestamp, d.note, d.updated_at, d.version,
+                   d.wind_speed_raw, d.timestamp_raw, d.wind_dir
+              FROM jsonb_to_recordset(CAST(:defects AS jsonb))
+                   AS d(ts timestamptz, note text, updated_at timestamptz,
+                        version int, wind_speed_raw text, timestamp_raw text,
+                        wind_dir int)
+        ), targets AS (
+            SELECT h.ts FROM hours h
+              LEFT JOIN measurements m ON m.timestamp = h.ts
+             WHERE m.timestamp IS NULL
+            UNION
+            SELECT d.timestamp FROM defects d
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM measurements m
+                    WHERE m.timestamp = d.timestamp
+                      AND m.qc_note IS NULL
+                      AND (m.updated_at, m.version) >= (d.updated_at, d.version))
+            UNION
+            SELECT timestamp FROM measurements WHERE qc_note IS NOT NULL
+        ), stored_interp AS (
+            SELECT timestamp, qc_note, updated_at, version,
+                   wind_speed_raw, timestamp_raw, wind_dir_deg
+              FROM measurements
+             WHERE qc_note IS NOT NULL
+        ), framed AS (
+            SELECT t.ts                       AS timestamp,
+                   lag_m.wind_speed_ms        AS v_from,
+                   lag_m.timestamp            AS t_from,
+                   lead_m.wind_speed_ms       AS v_to,
+                   lead_m.timestamp           AS t_to,
+                   lag_m.wind_dir_deg         AS dir_from,
+                   COALESCE(d.note, si.qc_note, 'Stunde nicht geliefert')                                              AS qc_note,
+                   COALESCE(d.updated_at, si.updated_at, lead_m.updated_at)
+                                              AS updated_at,
+                   COALESCE(d.version, si.version, lead_m.version, 0)
+                                              AS version,
+                   COALESCE(d.wind_speed_raw, si.wind_speed_raw, '')
+                                              AS wind_speed_raw,
+                   COALESCE(d.timestamp_raw, si.timestamp_raw, '')
+                                              AS timestamp_raw,
+                   COALESCE(d.wind_dir, si.wind_dir_deg, lag_m.wind_dir_deg)
+                                              AS wind_dir_deg
+              FROM targets t
+              LEFT JOIN LATERAL (
+                   SELECT * FROM measurements
+                    WHERE timestamp < t.ts AND qc_note IS NULL
+                    ORDER BY timestamp DESC LIMIT 1) lag_m ON true
+              LEFT JOIN LATERAL (
+                   SELECT * FROM measurements
+                    WHERE timestamp > t.ts AND qc_note IS NULL
+                    ORDER BY timestamp ASC LIMIT 1) lead_m ON true
+              LEFT JOIN defects d ON d.timestamp = t.ts
+              LEFT JOIN stored_interp si ON si.timestamp = t.ts
+             WHERE lag_m.wind_speed_ms IS NOT NULL
+               AND lead_m.wind_speed_ms IS NOT NULL
+        )
+        INSERT INTO measurements (mast_id, timestamp, timestamp_raw,
+                                  wind_speed_ms, wind_speed_raw, wind_dir_deg,
+                                  qc_note, version, updated_at)
+        SELECT :mast_id,
+               f.timestamp,
+               f.timestamp_raw,
+               f.v_from + (f.v_to - f.v_from)
+                    * EXTRACT(EPOCH FROM f.timestamp - f.t_from)
+                    / EXTRACT(EPOCH FROM f.t_to - f.t_from),
+               f.wind_speed_raw,
+               f.wind_dir_deg,
+               f.qc_note,
+               f.version,
+               f.updated_at
+          FROM framed f
+          ON CONFLICT (mast_id, timestamp) DO UPDATE
+             SET timestamp_raw  = EXCLUDED.timestamp_raw,
+                 wind_speed_ms  = EXCLUDED.wind_speed_ms,
+                 wind_speed_raw = EXCLUDED.wind_speed_raw,
+                 wind_dir_deg   = EXCLUDED.wind_dir_deg,
+                 qc_note        = EXCLUDED.qc_note,
+                 version        = EXCLUDED.version,
+                 updated_at     = EXCLUDED.updated_at
+           WHERE measurements.wind_speed_ms IS DISTINCT FROM EXCLUDED.wind_speed_ms
+              OR measurements.qc_note       IS DISTINCT FROM EXCLUDED.qc_note
+    """), {"defects": json.dumps(defects), "mast_id": mast_id})
 
 
 async def upsert_mast(session: AsyncSession, values: dict[str, Any]) -> bool:
@@ -135,8 +252,7 @@ async def aep_trailing_12m(session: AsyncSession) -> dict[str, Any]:
               JOIN mast  ON mast.id = m.mast_id
               CROSS JOIN turbine t
               CROSS JOIN site s
-             WHERE m.quality = 'ok'
-               AND m.timestamp >= now() - interval '12 months'
+             WHERE m.timestamp >= now() - interval '12 months'
         ), {_CURVE_SPEEDS_SQL}
         SELECT COALESCE(SUM(COALESCE(p.power_kw, 0)), 0) AS aep_gross_kwh,
                COUNT(*)                                  AS usable_hours,
@@ -189,11 +305,11 @@ _CURVE_SPEEDS_SQL = """
 """
 
 # --- daily-series SQL layers -----------------------------------------------
-#   hourly  — ok measurement rows with hub-height speed (heavier view logic,
+#   hourly  — measurement rows with hub-height speed (heavier view logic,
 #             kept date-filtered here so the curve math runs on window data only)
 #   ok      — one row per day: energy, hour count, mean/max mast speed
 
-# Ok-hour rows: date, raw mast speed, and mast speed re-scaled to hub height
+# Hour rows: date, raw mast speed, and mast speed re-scaled to hub height
 # (shear-exponent profile from measurement height to hub height).
 _DAILY_HOURLY_SQL = """
     hourly AS (
@@ -206,8 +322,7 @@ _DAILY_HOURLY_SQL = """
           JOIN mast  ON mast.id = m.mast_id
           CROSS JOIN turbine t
           CROSS JOIN site s
-         WHERE m.quality = 'ok'
-           AND (m.timestamp AT TIME ZONE 'UTC')::date
+         WHERE (m.timestamp AT TIME ZONE 'UTC')::date
                >= (now() - make_interval(days => :days))::date
     )
 """
@@ -247,53 +362,42 @@ _DAILY_OK_SQL = """
 
 
 async def daily_series(session: AsyncSession, days: int = 90) -> list[dict]:
-    """Per-day energy + QC counts, so the SPA can color bars without a 2nd call.
+    """Per-day energy series, oldest first.
 
-    Assembled from the layer fragments above into a single statement. Missing/
-    malformed/suspect rows count as `suspect_hours`/`missing_hours`; days
-    without any ok hour appear with NULL energy — the SPA draws them as a gap.
+    Assembled from the layer fragments above into a single statement. Every
+    day of the window is present; days without any stored hour come back with
+    NULL energy (a data gap the SPA renders empty).
     """
     result = await session.execute(
         text(f"""
-        WITH qc AS (
-            SELECT (timestamp AT TIME ZONE 'UTC')::date AS day,
-                   COUNT(*) FILTER (WHERE quality = 'suspect')                 AS suspect_hours,
-                   COUNT(*) FILTER (WHERE quality IN ('missing', 'malformed')) AS missing_hours
-              FROM measurements
-             WHERE timestamp >= now() - make_interval(days => :days)
-             GROUP BY 1
-        ), {_CURVE_PTS_SQL}, {_DAILY_HOURLY_SQL}, {_CURVE_SPEEDS_SQL}, {_DAILY_OK_SQL}
-        SELECT o.day, o.energy_kwh, o.hours, o.mean_wind_ms, o.max_wind_ms,
-               COALESCE(q.suspect_hours, 0) AS suspect_hours,
-               COALESCE(q.missing_hours, 0) AS missing_hours
-          FROM ok o
-          LEFT JOIN qc q USING (day)
-        UNION ALL
-        -- qc-only days (no ok hour): surface them as gaps instead of dropping
-        SELECT q.day, NULL, NULL, NULL, NULL, q.suspect_hours, q.missing_hours
-          FROM qc q
-         WHERE NOT EXISTS (SELECT 1 FROM ok o WHERE o.day = q.day)
-         ORDER BY day
+        WITH {_CURVE_PTS_SQL}, {_DAILY_HOURLY_SQL}, {_CURVE_SPEEDS_SQL}, {_DAILY_OK_SQL}
+        , days AS (
+            SELECT generate_series(
+                       (now() - make_interval(days => :days))::date,
+                       now()::date,
+                       interval '1 day')::date AS day
+        )
+        SELECT d.day, o.energy_kwh, o.hours, o.mean_wind_ms, o.max_wind_ms
+          FROM days d
+          LEFT JOIN ok o ON o.day = d.day
+         ORDER BY d.day
     """), {"days": days})
     return [dict(row) for row in result.mappings().all()]
 
 
 async def coverage(session: AsyncSession) -> dict[str, Any]:
-    """Measurement range, expected/absent hours, QC row splits, max gap.
+    """Measurement range, expected/absent hours, interpolation count, max gap.
 
     Limited to the trailing 12 months, the same window as AEP, so the coverage
-    describes the hours the yield is built from. Hour classes are counted by
-    stored quality; `absent_hours` are the hours of the covered span with no
-    row at all; `max_gap_hours` is the largest consecutive hole in the window.
+    describes the hours the yield is built from. Every stored hour is usable
+    (`absent_hours` are the hours of the covered span with no row at all —
+    unfillable edges); interpolated ones counted via `interpolated_hours`.
     """
     result = await session.execute(text("""
         SELECT MIN(timestamp)  AS from_ts,
                MAX(timestamp)  AS to_ts,
                COUNT(*)        AS total_hours,
-               COUNT(*) FILTER (WHERE quality = 'ok')        AS usable_hours,
-               COUNT(*) FILTER (WHERE quality = 'suspect')   AS suspect_hours,
-               COUNT(*) FILTER (WHERE quality = 'missing')   AS missing_hours,
-               COUNT(*) FILTER (WHERE quality = 'malformed') AS malformed_hours,
+               COUNT(*) FILTER (WHERE qc_note IS NOT NULL) AS interpolated_hours,
                CASE WHEN MIN(timestamp) IS NULL THEN 0
                     ELSE EXTRACT(EPOCH FROM MAX(timestamp) - MIN(timestamp)) / 3600 + 1
                END                                            AS expected_hours,
@@ -325,12 +429,16 @@ _WIND_RESOLUTIONS = {
 async def wind_series(
     session: AsyncSession, days: int = 2, resolution: str = "hour"
 ) -> list[dict]:
-    """Per-bucket speed stats (every row with a value) + QC counts, oldest first.
+    """Per-bucket speed stats + interpolation counts/reasons, oldest first.
 
-    Every bucket of the trailing `days` window is present: flagged and absent
-    hours surface as empty buckets (NULL speeds, zero counts) so the SPA can
-    draw gaps where data is missing. Buckets are UTC (weeks start Monday);
-    mean/min/max cover ok + suspect rows — the original values.
+    Every bucket of the trailing `days` window is present: hours without a
+    stored row surface as empty buckets (NULL speeds) so the SPA can draw
+    gaps where data is missing. Buckets are UTC (weeks start Monday); mean/
+    min/max are the stored values (for interpolated hours that is the
+    interpolation result). `qc_note`/`wind_speed_raw` aggregate the
+    interpolated rows' reason and *rejected original* inside the bucket
+    (`NULL` when nothing was interpolated) — at `hour` resolution that is
+    simply the hour's own row; the raw is unit-dependent text as received.
     """
     unit, step = _WIND_RESOLUTIONS[resolution]
     result = await session.execute(text(f"""
@@ -345,13 +453,15 @@ async def wind_series(
         ), agg AS (
             SELECT date_trunc('{unit}', timestamp AT TIME ZONE 'UTC')
                        AT TIME ZONE 'UTC'                                    AS bucket,
-                   AVG(wind_speed_ms) FILTER (WHERE wind_speed_ms IS NOT NULL) AS mean_wind_ms,
-                   MIN(wind_speed_ms) FILTER (WHERE wind_speed_ms IS NOT NULL) AS min_wind_ms,
-                   MAX(wind_speed_ms) FILTER (WHERE wind_speed_ms IS NOT NULL) AS max_wind_ms,
-                   COUNT(*) FILTER (WHERE quality = 'ok')        AS ok_hours,
-                   COUNT(*) FILTER (WHERE quality = 'suspect')   AS suspect_hours,
-                   COUNT(*) FILTER (WHERE quality = 'missing')   AS missing_hours,
-                   COUNT(*) FILTER (WHERE quality = 'malformed') AS malformed_hours
+                   AVG(wind_speed_ms) AS mean_wind_ms,
+                   MIN(wind_speed_ms) AS min_wind_ms,
+                   MAX(wind_speed_ms) AS max_wind_ms,
+                   COUNT(*) FILTER (WHERE qc_note IS NOT NULL) AS interpolated_hours,
+                   string_agg(DISTINCT qc_note, '; ')          AS qc_note,
+                   string_agg(DISTINCT CASE WHEN wind_speed_raw <> ''
+                                            THEN wind_speed_raw END, '; ')
+                        FILTER (WHERE qc_note IS NOT NULL)
+                                                               AS wind_speed_raw
               FROM measurements, bounds
              WHERE timestamp >= from_ts
                AND timestamp <  to_ts + interval '{step}'
@@ -359,10 +469,8 @@ async def wind_series(
         )
         SELECT b.bucket AS timestamp,
                a.mean_wind_ms, a.min_wind_ms, a.max_wind_ms,
-               COALESCE(a.ok_hours, 0)        AS ok_hours,
-               COALESCE(a.suspect_hours, 0)   AS suspect_hours,
-               COALESCE(a.missing_hours, 0)   AS missing_hours,
-               COALESCE(a.malformed_hours, 0) AS malformed_hours
+               COALESCE(a.interpolated_hours, 0) AS interpolated_hours,
+               a.qc_note, a.wind_speed_raw
           FROM buckets b
           LEFT JOIN agg a USING (bucket)
          ORDER BY b.bucket
@@ -390,9 +498,7 @@ async def wind_rose(session: AsyncSession, days: int = ROSE_WINDOW_DAYS) -> list
                COUNT(*)            AS frequency,
                AVG(wind_speed_ms)  AS mean_speed_ms
           FROM measurements
-         WHERE quality = 'ok'
-           AND wind_speed_ms IS NOT NULL
-           AND timestamp >= now() - make_interval(days => :days)
+         WHERE timestamp >= now() - make_interval(days => :days)
          GROUP BY 1
     """), {"days": days})
     counted = {r["sector"]: dict(r) for r in result.mappings().all()}
@@ -413,8 +519,7 @@ WINDOW_FRESH_HOURS = 48
 
 _INGEST_RUN_COLS = """
        id, started_at, finished_at, status, pages, inserted, updated,
-       frame_from, frame_to, qc_missing, qc_suspect, qc_malformed,
-       max_gap_hours, detail
+       frame_from, frame_to, interpolated, max_gap_hours, detail
 """
 
 
@@ -470,15 +575,14 @@ async def record_ingest_run(
     session: AsyncSession, *, started_at: datetime, finished_at: datetime,
     status: str, pages: int, inserted: int, updated: int,
     frame_from: Optional[datetime] = None, frame_to: Optional[datetime] = None,
-    qc_missing: int = 0, qc_suspect: int = 0, qc_malformed: int = 0,
+    interpolated: int = 0,
     max_gap_hours: Optional[int] = None, detail: Optional[str] = None,
 ) -> IngestRun:
     run = IngestRun(
         started_at=started_at, finished_at=finished_at, status=status,
         pages=pages, inserted=inserted, updated=updated,
         frame_from=frame_from, frame_to=frame_to,
-        qc_missing=qc_missing, qc_suspect=qc_suspect,
-        qc_malformed=qc_malformed, max_gap_hours=max_gap_hours,
+        interpolated=interpolated, max_gap_hours=max_gap_hours,
         detail=detail,
     )
     session.add(run)

@@ -9,7 +9,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,8 +30,8 @@ PAGE_LIMIT = 500
 # Circuit breaker: a full backfill needs ~18 pages; 10k pages is ≥ 5M rows
 MAX_PAGES = 10_000
 
-# A page with more suspect rows than this is an API change, not bad data → run status `partial`
-SUSPECT_PAGE_FRACTION = 0.3
+# A page with more defected rows than this is an API change, not bad data → run status `partial`
+DEFECT_PAGE_FRACTION = 0.3
 
 # Ingest advisory lock: prevents cron + manual runs from overlapping
 INGEST_LOCK_NAME = "windiq:ingest"
@@ -44,33 +44,34 @@ class IngestStats:
     pages: int = 0
     inserted: int = 0
     updated: int = 0
-    qc: dict = field(default_factory=dict)   # quality → count, ok rows excluded
+    defects: dict = field(default_factory=dict)  # defect class → count
     dead_letters: int = 0
-    suspect_heavy_pages: int = 0
+    defect_heavy_pages: int = 0
     frame_from: Optional[datetime] = None
     frame_to: Optional[datetime] = None
 
     @property
     def status(self) -> str:
-        return "partial" if self.suspect_heavy_pages else "ok"
+        return "partial" if self.defect_heavy_pages else "ok"
 
-    def merge_page(self, rows: list[NormalizedHour], dead_letters: int,
-                   inserted: int, updated: int, suspect_heavy: bool) -> None:
+    @property
+    def interpolated(self) -> int:
+        """Hours this run could not store and filled by interpolation."""
+        return sum(self.defects.values())
+
+    def merge_page(self, normalized: Iterable[NormalizedHour], dead_letters: int,
+                   inserted: int, updated: int, defect_heavy: bool) -> None:
         self.pages += 1
         self.inserted += inserted
         self.updated += updated
         self.dead_letters += dead_letters
-        self.suspect_heavy_pages += suspect_heavy
-        for row in rows:
-            defect = row.defect
-            if defect:
-                self.qc[defect] = self.qc.get(defect, 0) + 1
-        timestamps = [r.timestamp for r in rows]
-        if timestamps:
-            batch_min, batch_max = min(timestamps), max(timestamps)
-            self.frame_from = min(self.frame_from, batch_min) \
-                if self.frame_from else batch_min
-            self.frame_to = max(self.frame_to, batch_max) if self.frame_to else batch_max
+        self.defect_heavy_pages += defect_heavy
+        for row in normalized:
+            if row.defect:
+                self.defects[row.defect] = self.defects.get(row.defect, 0) + 1
+            ts = row.timestamp
+            self.frame_from = min(self.frame_from, ts) if self.frame_from else ts
+            self.frame_to = max(self.frame_to, ts) if self.frame_to else ts
 
 
 def now_utc() -> datetime:
@@ -131,6 +132,22 @@ def _iso_dt(raw: str) -> datetime:
     return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def defect_payload(normalized: Iterable[NormalizedHour]) -> list[dict[str, Any]]:
+    """This run's defected hours, ready for `repo.interpolate_gaps`."""
+    return [
+        {
+            "ts": row.timestamp.isoformat(),
+            "note": row.reason,
+            "updated_at": row.updated_at.isoformat(),
+            "version": row.version,
+            "wind_speed_raw": row.wind_speed_raw,
+            "timestamp_raw": row.timestamp_raw,
+            "wind_dir": row.wind_dir_deg,
+        }
+        for row in normalized if row.defect is not None
+    ]
+
+
 async def iter_measurement_pages(
     client, *, since=None, updated_since=None,
     fetch: Optional[Callable] = None,
@@ -154,7 +171,7 @@ async def iter_measurement_pages(
 
 
 async def get_cut_out(session: AsyncSession) -> Optional[float]:
-    """Turbine cut-out from the DB — the QC bound moves with reference data."""
+    """Turbine cut-out from the DB — the QA bound moves with reference data."""
     return await session.scalar(text(
         "SELECT cut_out_wind_speed_ms FROM turbine LIMIT 1"
     ))
@@ -164,7 +181,11 @@ async def ingest_page(
     session: AsyncSession, page: MeasurementPage,
     *, mast_id: str, cut_out_ms: float, normalize,
 ) -> tuple[list[NormalizedHour], int, int, int, bool]:
-    """Normalize + upsert one page (single transaction step)."""
+    """Normalize + upsert one page (single transaction step).
+
+    Only rows with a usable value are stored; defected hours come back in the
+    normalized list for the end-of-run interpolation.
+    """
     dead_letters = 0
     rows: list[MeasurementRow] = []
     normalized: list[NormalizedHour] = []
@@ -174,23 +195,23 @@ async def ingest_page(
             dead_letters += 1
             continue
         normalized.append(n)
-        rows.append(MeasurementRow(
-            mast_id=mast_id,
-            timestamp=n.timestamp,
-            timestamp_raw=n.timestamp_raw,
-            wind_speed_ms=n.wind_speed_ms,
-            unit=n.unit,
-            wind_speed_raw=n.wind_speed_raw,
-            wind_dir_deg=n.wind_dir_deg,
-            quality=n.quality,
-            version=n.version,
-            updated_at=n.updated_at,
-        ))
+        if n.defect is None:
+            rows.append(MeasurementRow(
+                mast_id=mast_id,
+                timestamp=n.timestamp,
+                timestamp_raw=n.timestamp_raw,
+                wind_speed_ms=n.wind_speed_ms,
+                wind_speed_raw=n.wind_speed_raw,
+                wind_dir_deg=n.wind_dir_deg,
+                qc_note=None,
+                version=n.version,
+                updated_at=n.updated_at,
+            ))
     inserted, updated = await upsert_measurements(session, rows)
     page_rows = len(page.data)
-    suspect_count = sum(1 for r in normalized if r.quality == "suspect")
-    suspect_heavy = page_rows > 0 and suspect_count > page_rows * SUSPECT_PAGE_FRACTION
-    return normalized, inserted, updated, dead_letters, suspect_heavy
+    defect_count = sum(1 for r in normalized if r.defect is not None)
+    defect_heavy = page_rows > 0 and defect_count > page_rows * DEFECT_PAGE_FRACTION
+    return normalized, inserted, updated, dead_letters, defect_heavy
 
 
 async def max_gap_hours(
@@ -209,9 +230,13 @@ async def max_gap_hours(
 
 
 def compile_detail(stats: IngestStats, dead_letter_count: int) -> str:
-    parts = [f"{k}={v}" for k, v in sorted(stats.qc.items())]
+    """Run detail: defect-class breakdown of the interpolated hours."""
+    parts = [
+        f"{cls}={count}"
+        for cls, count in sorted(stats.defects.items())
+    ]
     if dead_letter_count:
         parts.append(f"dead_letter={dead_letter_count}")
-    if stats.suspect_heavy_pages:
-        parts.append(f"suspect_heavy_pages={stats.suspect_heavy_pages}")
-    return "; ".join(parts)
+    if stats.defect_heavy_pages:
+        parts.append(f"defect_heavy_pages={stats.defect_heavy_pages}")
+    return "; ".join(parts) if parts else None

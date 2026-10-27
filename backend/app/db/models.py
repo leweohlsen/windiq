@@ -3,7 +3,6 @@ from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
-    CheckConstraint,
     Date,
     DateTime,
     Double,
@@ -82,10 +81,6 @@ class Site(Base):
 class Measurement(Base):
     __tablename__ = "measurements"
     __table_args__ = (
-        CheckConstraint(
-            "quality IN ('ok','suspect','missing','malformed')",
-            name="measurements_quality_check",
-        ),
         Index("ix_measurements_updated_at", "updated_at"),
     )
 
@@ -96,18 +91,17 @@ class Measurement(Base):
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), primary_key=True
     )
-    # Canonical: unit-normalized, string→float; NULL if missing/malformed.
-    wind_speed_ms: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
-    # As received ('m/s' | 'km/h')
-    unit: Mapped[str] = mapped_column(Text, nullable=False)
-    # Original value (e.g. "-999.0", "7.47"), for audit
+    # Canonical m/s. The ingest pipeline guarantees every stored row has a
+    # usable value: hours that arrive defective are filled by interpolation.
+    wind_speed_ms: Mapped[float] = mapped_column(Double, nullable=False)
+    # Original value as received (audit). For an interpolated hour this is
+    # the rejected raw value (e.g. "-999.0"), "" if the API never delivered.
     wind_speed_raw: Mapped[str] = mapped_column(Text, nullable=False)
     # Original timestamp string incl. timezone suffix (suffix evidence)
     timestamp_raw: Mapped[str] = mapped_column(Text, nullable=False)
     wind_dir_deg: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    quality: Mapped[str] = mapped_column(
-        Text, nullable=False, default="ok", server_default="ok"
-    )
+    # Why this hour was interpolated (qc.py REASONS); NULL = measured ok.
+    qc_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -137,10 +131,8 @@ class IngestRun(Base):
     frame_to: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # QC defect counts of this run; a run with many suspect rows is `partial`
-    qc_missing: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    qc_suspect: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    qc_malformed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Ingest QA: hours this run could not store and filled by interpolation
+    interpolated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # largest data hole (h) inside the fetched frame
     max_gap_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

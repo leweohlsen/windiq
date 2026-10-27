@@ -74,28 +74,29 @@ async def test_queue_ingest_backfill_mode(monkeypatch):
     assert sync_task.sent == []
 
 
-async def test_daily_endpoint_qc_columns(db, clean, reference, measurement_row, hour):
-    assert await api_mod.daily(30) == []      # wiped DB never crashes the endpoint
+async def test_daily_endpoint_daily_energy(db, clean, reference, measurement_row, hour):
+    daily = await api_mod.daily(30)
+    assert len(daily) == 31                    # every day is present
+    assert all(p["energy_kwh"] is None for p in daily)   # empty store → gaps
 
     # 12:00 anchor — hour+1 crossing UTC midnight would split into two days
     # and flake for runs between 21:00 and 24:00 UTC (see test_db.py sibling)
     t0 = hour.replace(hour=12)
     await repo.upsert_measurements(db, [
-        measurement_row(t0, 8.0, quality="ok"),
-        measurement_row(t0 + HOUR, -0.5, quality="suspect"),
+        measurement_row(t0, 8.0),
+        measurement_row(t0 + HOUR, 6.0, qc_note="kein Messwert geliefert"),
     ])
     await db.commit()
     daily = await api_mod.daily(30)
     today = next(p for p in daily if p["day"] == t0.date())
     assert today["energy_kwh"] is not None
-    assert today["suspect_hours"] == 1
-    assert today["missing_hours"] == 0
+    assert today["hours"] == 2
 
 
 async def test_daily_endpoint_caps_days(db, clean, reference, measurement_row):
-    # clamped to a 1-day window; on a wiped DB that is always empty
-    assert await api_mod.daily(0) == []
-    assert await api_mod.daily(-5) == []
+    # clamped to a 1-day window; the day list length tracks the window
+    assert len(await api_mod.daily(0)) == 2
+    assert len(await api_mod.daily(-5)) == 2
 
 
 async def test_metrics_endpoint_chain_and_staleness(
@@ -119,6 +120,7 @@ async def test_metrics_endpoint_chain_and_staleness(
     assert payload["mast"]["measurement_height_m"] == 100.0
     assert payload["staleness"]["last_run"] is None
     assert payload["coverage"]["absent_hours"] == 0
+    assert payload["coverage"]["interpolated_hours"] == 0
 
 
 async def test_turbine_endpoint_specs_and_curve(db, clean, reference):
@@ -142,8 +144,8 @@ async def test_turbine_endpoint_none_without_turbine(db, clean):
 async def test_wind_endpoint_series_and_rose(db, clean, reference, measurement_row, hour):
     await repo.upsert_measurements(db, [
         measurement_row(hour, 5.0, wind_dir=10),
-        measurement_row(hour - HOUR, 6.0, wind_dir=200),
-        measurement_row(hour - 2 * HOUR, None, quality="missing"),
+        measurement_row(hour - HOUR, 6.0, wind_dir=200, qc_note="negativer Messwert"),
+        measurement_row(hour - 2 * HOUR, 4.0, qc_note="kein Messwert geliefert"),
     ])
     await db.commit()
     payload = await api_mod.wind(2)
@@ -151,10 +153,13 @@ async def test_wind_endpoint_series_and_rose(db, clean, reference, measurement_r
     assert payload["resolution"] == "hour"
     assert len(payload["series"]) == 49      # every hour of the 2-day window
     by_ts = {p["timestamp"]: p for p in payload["series"]}
-    assert by_ts[hour]["ok_hours"] == 1
-    assert by_ts[hour - HOUR]["ok_hours"] == 1
-    assert by_ts[hour - 2 * HOUR]["missing_hours"] == 1
-    assert by_ts[hour - 3 * HOUR]["ok_hours"] == 0    # absent hour → empty bucket
+    assert by_ts[hour]["interpolated_hours"] == 0
+    assert by_ts[hour]["qc_note"] is None
+    assert by_ts[hour - HOUR]["interpolated_hours"] == 1
+    assert by_ts[hour - HOUR]["qc_note"] == "negativer Messwert"
+    assert by_ts[hour - 2 * HOUR]["interpolated_hours"] == 1
+    assert by_ts[hour - 2 * HOUR]["wind_speed_raw"] == "4.0"   # rejected original
+    assert by_ts[hour - 3 * HOUR]["mean_wind_ms"] is None   # absent hour: gap
     assert len(payload["rose"]) == 16               # all sectors, never filtered
     north = next(s for s in payload["rose"] if s["direction"] == "N")
     assert north["frequency"] == 1

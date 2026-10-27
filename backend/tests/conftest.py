@@ -134,23 +134,19 @@ def hour() -> datetime:
 @pytest.fixture
 def measurement_row() -> repo.MeasurementRow:
     def factory(
-        ts: datetime, wind: str | float | None, unit: str = "m/s",
-        quality: str = "ok", version: int = 1,
+        ts: datetime, wind: str | float, version: int = 1,
         updated_at: datetime | None = None, mast_id: str = "TEST-M",
-        wind_dir: int = 180,
+        wind_dir: int = 180, qc_note: str | None = None,
     ) -> repo.MeasurementRow:
-        wind_speed_ms = float(wind) if isinstance(wind, float) else None
-        if unit == "km/h" and wind_speed_ms is not None:
-            wind_speed_ms = wind_speed_ms / 3.6
+        wind_speed_ms = float(wind)
         return repo.MeasurementRow(
             mast_id=mast_id,
             timestamp=ts,
             timestamp_raw=ts.isoformat(),
             wind_speed_ms=wind_speed_ms,
-            unit=unit,
-            wind_speed_raw="" if wind is None else str(wind),
+            wind_speed_raw=str(wind),
             wind_dir_deg=wind_dir,
-            quality=quality,
+            qc_note=qc_note,
             version=version,
             updated_at=updated_at or ts,
         )

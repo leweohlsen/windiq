@@ -13,11 +13,13 @@ from typing import Any, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import repo
 from app.db.engine import SessionLocal
 from app.db.repo import record_ingest_run, upsert_mast, upsert_site, upsert_turbine
 from app.ingest.common import (
     IngestStats,
     compile_detail,
+    defect_payload,
     get_cut_out,
     ingest_page,
     iter_measurement_pages,
@@ -81,12 +83,18 @@ async def _run(
 
     mast_id, cut_out_ms = await persist_reference(session, client)
     stats = IngestStats()
+    defects: list[NormalizedHour] = []
     async for page in iter_measurement_pages(client, updated_since=updated_since):
-        rows, inserted, updated, dead, suspect_heavy = await ingest_page(
+        normalized, inserted, updated, dead, defect_heavy = await ingest_page(
             session, page, mast_id=mast_id, cut_out_ms=cut_out_ms,
             normalize=normalize_measurement,
         )
-        stats.merge_page(rows, dead, inserted, updated, suspect_heavy)
+        stats.merge_page(normalized, dead, inserted, updated, defect_heavy)
+        defects.extend(row for row in normalized if row.defect is not None)
+
+    # Whole-range gap fill last: hours this run rejected plus anything the
+    # API never delivered now interpolate between the closest real rows.
+    await repo.interpolate_gaps(session, defect_payload(defects), mast_id=mast_id)
 
     max_gap = await max_gap_hours(session, stats.frame_from, stats.frame_to) \
         if stats.frame_from else None
@@ -95,22 +103,22 @@ async def _run(
         status=stats.status, pages=stats.pages,
         inserted=stats.inserted, updated=stats.updated,
         frame_from=stats.frame_from, frame_to=stats.frame_to,
-        qc_missing=stats.qc.get("missing", 0),
-        qc_suspect=stats.qc.get("suspect", 0),
-        qc_malformed=stats.qc.get("malformed", 0),
+        interpolated=stats.interpolated,
         max_gap_hours=max_gap,
         detail=compile_detail(stats, stats.dead_letters),
     )
     await session.commit()
     log.info(
         "ingest finished run=%s status=%s pages=%s inserted=%s updated=%s"
-        " qc=%s frame=%s…%s max_gap_hours=%s",
+        " interpolated=%s dead=%s frame=%s…%s max_gap_hours=%s",
         run_id, stats.status, stats.pages, stats.inserted, stats.updated,
-        stats.qc, stats.frame_from, stats.frame_to, max_gap,
+        stats.interpolated, stats.dead_letters,
+        stats.frame_from, stats.frame_to, max_gap,
     )
     return {
         "status": stats.status, "pages": stats.pages,
         "inserted": stats.inserted, "updated": stats.updated,
+        "interpolated": stats.interpolated,
         "max_gap_hours": max_gap,
     }
 
