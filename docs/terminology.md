@@ -69,7 +69,7 @@ translated in data**, only in labels:
 | ingest run | Ingest-Lauf | "Ingest" stays (common German tech loanword) |
 | ingest history | Ingest-Verlauf | |
 | last ingest run | Letzter Ingest-Lauf | |
-| sync now | Jetzt synchronisieren | |
+| sync now | Winddaten abrufen | |
 | queued… | in Warteschlange… | |
 | pages | Seiten | |
 | inserted / updated | neu / geändert | table column: "Zeilen (neu/geändert)" |

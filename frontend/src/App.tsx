@@ -1,4 +1,6 @@
 import { useState, type ReactNode } from "react";
+import { keepPreviousData, useIsFetching, useQueryClient } from "@tanstack/react-query";
+import type { UseQueryResult } from "@tanstack/react-query";
 
 import logoUrl from "./assets/windiq-logo.png";
 
@@ -9,33 +11,54 @@ import { DataStatus } from "./components/DataStatus";
 import { IngestHistory } from "./components/IngestHistory";
 import { Methodology } from "./components/Methodology";
 import { ReferenceTurbine } from "./components/ReferenceTurbine";
-import { DAILY_RANGES, useDashboard, type Panel } from "./useDashboard";
+import {
+  useDaily,
+  useIngestRuns,
+  useMetrics,
+  useTurbine,
+  useWind,
+} from "./api/generated/windIQAPI";
+
+/** All dashboard GETs share the 60 s cadence (paused while the tab is
+ * hidden); unchanged payloads don't re-render (structural sharing). */
+const POLL_MS = 60_000;
+const WIND_HOURS = 48;
+const RUNS_LIMIT = 10;
+const DAILY_RANGES = [30, 90, 365];
 
 function App() {
   const [days, setDays] = useState(90);
-  const dashboard = useDashboard(days);
+  const queryClient = useQueryClient();
+
+  const metrics = useMetrics({ query: { refetchInterval: POLL_MS } });
+  // keepPreviousData: a range change re-fetches under a new key but keeps the
+  // old chart visible (refreshing dim) instead of flashing the skeleton
+  const daily = useDaily({ days }, { query: { refetchInterval: POLL_MS, placeholderData: keepPreviousData } });
+  const wind = useWind({ hours: WIND_HOURS }, { query: { refetchInterval: POLL_MS } });
+  const runs = useIngestRuns({ limit: RUNS_LIMIT }, { query: { refetchInterval: POLL_MS } });
+  const turbine = useTurbine({ query: { refetchInterval: POLL_MS } });
+
+  const panels = [metrics, daily, wind, runs, turbine];
+  // True while any fetch is in flight (for the global refresh button).
+  const loading = useIsFetching() > 0;
 
   // Skeleton gate: the dashboard appears in one piece once every panel holds
   // its first data (or error) — no sections popping in one by one. A panel
   // that finished without data (e.g. no turbine yet) lifts the gate too;
   // PanelState then shows its empty state.
-  const booting = [
-    dashboard.metrics,
-    dashboard.daily,
-    dashboard.wind,
-    dashboard.runs,
-    dashboard.turbine,
-  ].some((panel) => panel.data == null && panel.error == null && panel.loading);
+  const booting = panels.some((panel) => panel.isPending);
+
+  const refreshAll = () => void queryClient.refetchQueries();
 
   return (
     <main>
       {/* user-initiated fetches: indeterminate sweep, fixed so nothing shifts */}
-      <div className={dashboard.loading ? "progress active" : "progress"} aria-hidden="true" />
+      <div className={loading ? "progress active" : "progress"} aria-hidden="true" />
 
       <header className="masthead">
         <img src={logoUrl} alt="WindIQ" />
-        <button onClick={dashboard.refreshAll} disabled={dashboard.loading}>
-          {dashboard.loading ? "Aktualisiere…" : "Aktualisieren"}
+        <button onClick={refreshAll} disabled={loading}>
+          {loading ? "Aktualisiere…" : "Aktualisieren"}
         </button>
       </header>
 
@@ -44,47 +67,41 @@ function App() {
       ) : (
         <div className="dashboard">
           <section>
-            <PanelState panel={dashboard.metrics}>
-              {(metrics) => <Header metrics={metrics} />}
-            </PanelState>
+            <PanelState query={metrics}>{(metrics) => <Header metrics={metrics} />}</PanelState>
           </section>
 
           <section className="panel">
             <DailyHead days={days} onRangeChange={setDays} />
-            <PanelState panel={dashboard.daily}>
-              {(daily) => <DailyChart daily={daily} />}
-            </PanelState>
+            <PanelState query={daily}>{(daily) => <DailyChart daily={daily} />}</PanelState>
           </section>
 
           <section className="panel">
-            <PanelState panel={dashboard.wind}>{(wind) => <WindPanel wind={wind} />}</PanelState>
+            <PanelState query={wind}>{(wind) => <WindPanel wind={wind} />}</PanelState>
           </section>
 
           <section className="panel">
             <h2>Referenzanlage</h2>
-            <PanelState panel={dashboard.turbine}>
+            <PanelState query={turbine}>
               {(turbine) => turbine && <ReferenceTurbine turbine={turbine} />}
             </PanelState>
           </section>
 
           <section className="panel">
             <h2>Datenstatus</h2>
-            <PanelState panel={dashboard.metrics}>
+            <PanelState query={metrics}>
               {(metrics) => (
-                <PanelState panel={dashboard.runs}>
+                <PanelState query={runs}>
                   {(runs) => <DataStatus metrics={metrics} runs={runs} />}
                 </PanelState>
               )}
             </PanelState>
             <h3 className="chart-title ingest-title">Ingest-Verlauf</h3>
-            <PanelState panel={dashboard.runs}>
-              {(runs) => <IngestHistory runs={runs} />}
-            </PanelState>
+            <PanelState query={runs}>{(runs) => <IngestHistory runs={runs} />}</PanelState>
           </section>
 
           <section className="panel">
             <h2>Berechnungsmethode</h2>
-            <PanelState panel={dashboard.metrics}>
+            <PanelState query={metrics}>
               {(metrics) => <Methodology metrics={metrics} />}
             </PanelState>
           </section>
@@ -206,31 +223,38 @@ function DashboardSkeleton({
 /** Per-panel loading/error states: stale data stays visible after a failed
  * refresh, an empty panel shows failed/Retry (plan phase 4). A panel that is
  * refreshing with data present dims slightly instead of changing layout. */
-function PanelState<T>({ panel, children }: { panel: Panel<T>; children: (data: T) => ReactNode }) {
-  if (panel.data == null) {
-    if (panel.error) {
+function PanelState<T>({
+  query,
+  children,
+}: {
+  query: UseQueryResult<T, unknown>;
+  children: (data: T) => ReactNode;
+}) {
+  const error = query.error instanceof Error ? query.error.message : query.error ? "Unbekannter Fehler" : null;
+  if (query.data == null) {
+    if (error) {
       return (
         <p className="panel-empty">
-          Laden fehlgeschlagen — {panel.error}{" "}
-          <button onClick={panel.refresh} disabled={panel.loading}>
-            {panel.loading ? "Lädt…" : "Erneut versuchen"}
+          Laden fehlgeschlagen — {error}{" "}
+          <button onClick={() => void query.refetch()} disabled={query.isFetching}>
+            {query.isFetching ? "Lädt…" : "Erneut versuchen"}
           </button>
         </p>
       );
     }
-    return <p className="panel-empty">{panel.loading ? "Laden…" : "Keine Daten."}</p>;
+    return <p className="panel-empty">{query.isPending ? "Laden…" : "Keine Daten."}</p>;
   }
   const classes = ["data"];
-  if (panel.error) classes.push("stale-refresh");
-  if (panel.loading) classes.push("refreshing");
+  if (error) classes.push("stale-refresh");
+  if (query.isFetching) classes.push("refreshing");
   return (
     <div className={classes.join(" ")}>
-      {panel.error && (
+      {error && (
         <p className="error-note">
           Letzte Aktualisierung fehlgeschlagen — es werden die letzten Daten angezeigt.
         </p>
       )}
-      {children(panel.data)}
+      {children(query.data)}
     </div>
   );
 }

@@ -3,10 +3,13 @@
  * QC totals, max gap and a "sync now" button (plan phase 4). */
 import { useState } from "react";
 
-import { postIngestRun } from "../api";
+import { useQueueIngest } from "../api/generated/windIQAPI";
 import type { IngestRun, Metrics } from "../api";
 import { asAge, asClock, asHours, asPercent, asDuration, asStatus } from "../format";
-import { STALE_AFTER_SECONDS } from "../useDashboard";
+
+/** Data older than this (no fresh measurements/revision) means the worker
+ * is likely down — file is the plan's staleness threshold. */
+const STALE_AFTER_SECONDS = 3 * 3_600;
 
 export function DataStatus({ metrics, runs }: { metrics: Metrics; runs: IngestRun[] | null }) {
   const { coverage, staleness } = metrics;
@@ -24,11 +27,13 @@ export function DataStatus({ metrics, runs }: { metrics: Metrics; runs: IngestRu
 
   const stale = (staleness.data_age_seconds ?? 0) > STALE_AFTER_SECONDS;
 
+  const queueIngest = useQueueIngest();
+
   const queueSync = async () => {
     try {
       setQueuedAt(Date.now());
       setFailedAt(null);
-      await postIngestRun("sync");
+      await queueIngest.mutateAsync({ params: { mode: "sync" } });
     } catch {
       setQueuedAt(null);
       setFailedAt(Date.now());
@@ -65,7 +70,7 @@ export function DataStatus({ metrics, runs }: { metrics: Metrics; runs: IngestRu
           )}
         </ul>
         <button className="action" onClick={() => void queueSync()}>
-          {queued ? "In Warteschlange…" : "Jetzt synchronisieren"}
+          {queued ? "In Warteschlange…" : "Winddaten abrufen"}
         </button>
         {queueFailed && (
           <p className="error-note">Einreihung fehlgeschlagen — bitte später erneut versuchen.</p>

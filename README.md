@@ -12,7 +12,7 @@ Das Dashboard ist auf Deutsch, Code und API sind auf Englisch (siehe [terminolog
 ## Funktionsweise
 
 ```
-                 Cron alle 5 Min. · Button „Jetzt synchronisieren“
+                  Cron alle 5 Min. · Button „Winddaten abrufen“
                                  │
 WindIQ API ──▶ Worker ──Upsert──▶ PostgreSQL ──SQL-Views──▶ Backend (FastAPI) ──▶ Dashboard (React, nginx)
 ```

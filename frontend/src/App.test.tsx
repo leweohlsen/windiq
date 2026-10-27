@@ -1,12 +1,24 @@
 /** App-level integration: skeleton gate + progress bar during boot, then the
  * real dashboard; per-panel refresh dimming. */
 import { act, render } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import { metrics, showTab, stubDashboardFetch } from "./test/helpers";
 
 let responses: ReturnType<typeof stubDashboardFetch>["responses"];
+
+function renderApp() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+  );
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -26,7 +38,7 @@ describe("App", () => {
       release = resolve;
     });
 
-    const { container } = render(<App />);
+    const { container } = renderApp();
     expect(container.querySelector(".dashboard")).toBeNull();
     expect(container.querySelector(".progress.active")).not.toBeNull();
 
@@ -40,7 +52,7 @@ describe("App", () => {
   });
 
   it("dims a panel while its refresh is in flight", async () => {
-    const { container } = render(<App />);
+    const { container } = renderApp();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });

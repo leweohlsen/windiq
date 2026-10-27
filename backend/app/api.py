@@ -44,39 +44,41 @@ def revenue_chain(
     return {"net_kwh": net, "p50_kwh": net, "p90_kwh": net * (1 - 1.282 * uncertainty)}
 
 
-# --- response models (the SPA contract, mirrored in frontend/src/api.ts) ---
+# --- response models (the SPA contract; the frontend client is generated
+# from this spec — keep every field always-serialized: no `= None` defaults,
+# nullable via `| None`, so the spec marks fields required) ---
 
 
 class IngestRunOut(BaseModel):
     id: int
     started_at: datetime
-    finished_at: datetime | None = None
+    finished_at: datetime | None
     status: str
     pages: int
     inserted: int
     updated: int
-    frame_from: datetime | None = None
-    frame_to: datetime | None = None
+    frame_from: datetime | None
+    frame_to: datetime | None
     qc_missing: int
     qc_suspect: int
     qc_malformed: int
-    max_gap_hours: int | None = None
-    detail: str | None = None
+    max_gap_hours: int | None
+    detail: str | None
 
 
 class AepOut(BaseModel):
     gross_kwh: float
-    net_kwh: float | None = None
-    p50_kwh: float | None = None
-    p90_kwh: float | None = None
-    window_start: datetime | None = None
-    window_end: datetime | None = None
+    net_kwh: float | None
+    p50_kwh: float | None
+    p90_kwh: float | None
+    window_start: datetime | None
+    window_end: datetime | None
     usable_hours: int
 
 
 class CoverageOut(BaseModel):
-    from_ts: datetime | None = None
-    to_ts: datetime | None = None
+    from_ts: datetime | None
+    to_ts: datetime | None
     total_hours: int
     usable_hours: int
     suspect_hours: int
@@ -84,7 +86,7 @@ class CoverageOut(BaseModel):
     malformed_hours: int
     expected_hours: int
     absent_hours: int
-    max_gap_hours: int | None = None
+    max_gap_hours: int | None
 
 
 class SiteOut(BaseModel):
@@ -124,25 +126,25 @@ class MastOut(BaseModel):
 
 
 class StalenessOut(BaseModel):
-    last_run: IngestRunOut | None = None
-    data_age_seconds: int | None = None
+    last_run: IngestRunOut | None
+    data_age_seconds: int | None
 
 
 class MetricsOut(BaseModel):
     aep: AepOut
     coverage: CoverageOut
-    site: SiteOut | None = None
-    turbine: TurbineOut | None = None
-    mast: MastOut | None = None
+    site: SiteOut | None
+    turbine: TurbineOut | None
+    mast: MastOut | None
     staleness: StalenessOut
 
 
 class DailyPointOut(BaseModel):
     day: date
-    energy_kwh: float | None = None   # NULL → day without ok hours (gap)
-    hours: int | None = None
-    mean_wind_ms: float | None = None
-    max_wind_ms: float | None = None
+    energy_kwh: float | None   # NULL → day without ok hours (gap)
+    hours: int | None
+    mean_wind_ms: float | None
+    max_wind_ms: float | None
     suspect_hours: int
     missing_hours: int
 
@@ -157,7 +159,7 @@ class RoseSectorOut(BaseModel):
     direction: str
     degrees: int
     frequency: int
-    mean_speed_ms: float | None = None
+    mean_speed_ms: float | None
 
 
 class WindOut(BaseModel):
@@ -173,7 +175,7 @@ class QueuedOut(BaseModel):
 # --- endpoints ---
 
 
-@router.get("/api/metrics")
+@router.get("/api/metrics", operation_id="metrics")
 async def metrics() -> MetricsOut:
     """Dashboard header: revenue chain, coverage, metadata and staleness."""
     async with SessionLocal() as s:
@@ -234,7 +236,7 @@ def _one(model):
     return select(model).limit(1)
 
 
-@router.get("/api/turbine")
+@router.get("/api/turbine", operation_id="turbine")
 async def turbine() -> TurbineDetailOut | None:
     """Reference turbine specs plus the full power curve (1 m/s steps)."""
     async with SessionLocal() as s:
@@ -259,14 +261,14 @@ async def turbine() -> TurbineDetailOut | None:
     )
 
 
-@router.get("/api/daily")
+@router.get("/api/daily", operation_id="daily")
 async def daily(days: int = 90) -> list[DailyPointOut]:
     """Daily energy series for the chart; `days` capped at 365."""
     async with SessionLocal() as s:
         return await repo.daily_series(s, days=min(max(days, 1), DAYS_CAP))
 
 
-@router.get("/api/wind")
+@router.get("/api/wind", operation_id="wind")
 async def wind(hours: int = 48) -> WindOut:
     """Hourly speed+direction series and the 30-day 16-sector wind rose."""
     capped = min(max(hours, 1), WIND_HOURS_CAP)
@@ -276,14 +278,14 @@ async def wind(hours: int = 48) -> WindOut:
     return {"hours": capped, "series": series, "rose": rose}
 
 
-@router.get("/api/ingest/runs")
+@router.get("/api/ingest/runs", operation_id="ingest_runs")
 async def ingest_runs(limit: int = 10) -> list[IngestRunOut]:
     """Last N ingest runs, newest first."""
     async with SessionLocal() as s:
         return await repo.ingest_runs_recent(s, limit=min(max(limit, 1), RUNS_LIMIT_CAP))
 
 
-@router.post("/api/ingest/run")
+@router.post("/api/ingest/run", operation_id="queue_ingest")
 async def queue_ingest(mode: Literal["sync", "backfill"] = "sync") -> QueuedOut:
     """Queue an ingest run; returns immediately, progress shows in ingest_runs.
 
