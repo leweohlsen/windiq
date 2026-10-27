@@ -26,6 +26,7 @@ The backend, worker and scheduler read these variables. The local template is
 | `WIQ_MAX_ATTEMPTS`, `WIQ_RETRY_BACKOFF`, `WIQ_RETRY_MAX_WAIT` | retry tuning (defaults: 4 attempts, 8 s cap) |
 | `DATABASE_URL` | set by Compose; `backend/.env` needs it only for running outside Docker |
 | `POSTGRES_PASSWORD` | database password (default `windiq`) |
+| `BASIC_AUTH_USER`, `BASIC_AUTH_PASSWORD` | browser-level basic auth on the frontend; production runs fail at startup without them |
 
 The base `docker-compose.yml` does not pass the `WIQ_*` variables to the containers.
 Locally, use the dev overlay, which loads them from `backend/.env`.
@@ -79,6 +80,12 @@ Restore into a running stack only after stopping `backend`, `worker` and `schedu
   The webhook is configured through the `COOLIFY_WEBHOOK_URL` secret.
 - Production runs `docker-compose.prod.yml` on the VPS with `pull_policy: always`.
   This matters: a plain `docker compose up -d` would otherwise reuse a cached `:latest`.
+- **Basic auth:** set `BASIC_AUTH_USER` and `BASIC_AUTH_PASSWORD` in the Coolify
+  compose app's env vars (Coolify writes them into the `.env` that Compose picks up;
+  `docker-compose.prod.yml` forwards them into the `frontend` container, and
+  `frontend/95-basic-auth.sh` hashes them at container start). The dashboard and the
+  proxied `/api/*` are both behind the browser prompt. Changing the values requires a
+  container restart — the hash is created on startup.
 - **Rollback:** pin the image tag in `docker-compose.prod.yml` to a `sha-<commit>` tag and
   run `docker compose up -d`.
 - Deploys never touch the `windiq-pgdata` volume. Schema changes go through Alembic.

@@ -49,6 +49,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 Dashboard: http://localhost:5173 · API-Doku: http://localhost:5173/api/docs
 
 `docker compose up --build` startet den produktionsnahen Stack auf http://localhost:8080.
+Login (Basic Auth): `dev` / `dev`.
 Die WindIQ-Zugangsdaten werden an Backend, Worker und Scheduler darin noch nicht übergeben.
 Für die lokale Arbeit daher das Dev-Overlay nutzen. Details: [operations.md](docs/operations.md#configuration).
 

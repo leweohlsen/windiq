@@ -87,6 +87,9 @@ services:
       context: ./frontend
       target: runtime
     image: windiq-frontend
+    environment:
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-dev}
+      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:-dev}
     ports:
       - "8080:80"
     depends_on:
