@@ -445,8 +445,10 @@ async def wind_series(
         WITH bounds AS (
             SELECT date_trunc('{unit}', now() AT TIME ZONE 'UTC')
                        AT TIME ZONE 'UTC'                                  AS to_ts,
-                   date_trunc('{unit}', now() AT TIME ZONE 'UTC')
-                       AT TIME ZONE 'UTC' - make_interval(days => :days)   AS from_ts
+                   date_trunc('{unit}',
+                              date_trunc('{unit}', now() AT TIME ZONE 'UTC')
+                                  - make_interval(days => :days))
+                       AT TIME ZONE 'UTC'                               AS from_ts
         ), buckets AS (
             SELECT generate_series(from_ts, to_ts, interval '{step}') AS bucket
               FROM bounds
