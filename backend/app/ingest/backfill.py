@@ -108,6 +108,13 @@ async def _run(
         detail=compile_detail(stats, stats.dead_letters),
     )
     await session.commit()
+    # Matview refresh on a fresh session, autocommitted: not part of the
+    # ingest transaction (it spans minutes of network paging and must not
+    # hold ACCESS EXCLUSIVE on the matview that long). Unconditional —
+    # reference data may have changed with zero measurement writes. A crash
+    # here leaves the matview one run stale until the next cron cycle.
+    async with SessionLocal() as refresh_session:
+        await repo.refresh_energy_matview(refresh_session)
     log.info(
         "ingest finished run=%s status=%s pages=%s inserted=%s updated=%s"
         " interpolated=%s dead=%s frame=%s…%s max_gap_hours=%s",

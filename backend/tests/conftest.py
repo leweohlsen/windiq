@@ -94,6 +94,9 @@ async def _wipe(db: AsyncSession) -> None:
     await db.execute(text("DELETE FROM turbine"))
     await db.execute(text("DELETE FROM mast"))
     await db.commit()
+    # The matview holds its own storage; keep it consistent with the wiped base
+    # tables so tests deterministically see an empty energy layer.
+    await repo.refresh_energy_matview(db, concurrently=False)
 
 
 @pytest.fixture

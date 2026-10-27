@@ -184,6 +184,32 @@ async def test_backfill_is_idempotent(fake_client):
             assert gap == 0                # contiguous frame after the fill
 
 
+async def test_run_refreshes_energy_matview_once(fake_client, monkeypatch):
+    """_run refreshes the matview exactly once, after commit — an upserted
+    hour is visible in hourly_energy without any manual refresh."""
+    import app.db.repo as repo_mod
+
+    real_refresh = repo_mod.refresh_energy_matview
+    refresh_sessions: list = []
+
+    async def spy(session, **kwargs):
+        refresh_sessions.append(session)
+        await real_refresh(session, **kwargs)
+
+    monkeypatch.setattr(backfill.repo, "refresh_energy_matview", spy)
+
+    result = await backfill.run_backfill(client=fake_client)
+    assert result["inserted"] == 4
+    assert len(refresh_sessions) == 1        # one refresh per run
+
+    async with SessionLocal() as db:
+        matview_rows, stored_rows = (await db.execute(text(
+            "SELECT (SELECT COUNT(*) FROM hourly_energy),"
+            "       (SELECT COUNT(*) FROM measurements)"
+        ))).one()
+    assert matview_rows == stored_rows == 6   # fresh rows are already visible
+
+
 async def test_backfill_journals_reference_values(fake_client):
     await backfill.run_backfill(client=fake_client)
     async with SessionLocal() as db:

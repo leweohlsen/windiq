@@ -141,6 +141,8 @@ async def test_hourly_energy_covers_all_rows(db, clean, reference, measurement_r
         measurement_row(t0, 8.0),
         measurement_row(t0 + HOUR_LATER, 6.0, qc_note="kein Messwert geliefert"),
     ])
+    await db.commit()
+    await db.execute(text("REFRESH MATERIALIZED VIEW hourly_energy"))
     rows = (await db.execute(
         text("SELECT speed_hub_ms, energy_kwh FROM hourly_energy"
              " WHERE mast_id = 'TEST-M'"))).all()
@@ -156,6 +158,36 @@ async def test_hourly_energy_covers_all_rows(db, clean, reference, measurement_r
     assert aep["aep_gross_kwh"] > 0
 
 
+async def test_hourly_energy_power_matches_power_at(
+    db, clean, reference, measurement_row, hour
+):
+    """Golden equivalence: matview power == power_at(speed_hub_ms).
+
+    Contract the DISTINCT-on interpolation in the matview DDL must preserve:
+    same segment selection (lowest segment start) and linear math. Speeds
+    off the curve keep their matview NULL where power_at() maps to 0.
+    """
+    t0 = hour
+    await repo.upsert_measurements(db, [
+        measurement_row(t0, 0.0),                    # curve start: no segment
+        measurement_row(t0 + HOUR_LATER, 6.0),       # linear inside segment 1
+        measurement_row(t0 + 2 * HOUR_LATER, 14.0),  # segment 2
+        measurement_row(t0 + 3 * HOUR_LATER, 25.0),  # beyond the curve top
+    ])
+    await db.commit()
+    await db.execute(text("REFRESH MATERIALIZED VIEW hourly_energy"))
+    rows = (await db.execute(text(
+        "SELECT speed_hub_ms, power_kw, power_at(speed_hub_ms) AS power_at_kw"
+        "  FROM hourly_energy WHERE mast_id = 'TEST-M'"
+    ))).all()
+    assert len(rows) == 4
+    for speed_hub_ms, power_kw, power_at_kw in rows:
+        if power_kw is None:
+            assert power_at_kw == 0
+        else:
+            assert power_kw == pytest.approx(power_at_kw)
+
+
 async def test_daily_series_and_coverage(db, clean, reference, measurement_row, hour):
     # 12:00 anchor, one day back — the 4 h span stays on one UTC day and the
     # gap day (+1) lands inside the 30-day daily window.
@@ -169,6 +201,8 @@ async def test_daily_series_and_coverage(db, clean, reference, measurement_row, 
         # a day with zero stored hours must still appear (as an energy gap)
         measurement_row(t0 + 48 * HOUR_LATER, 7.0),
     ])
+    await db.commit()
+    await db.execute(text("REFRESH MATERIALIZED VIEW hourly_energy"))
     daily = await repo.daily_series(db)
     day = next(d for d in daily if d["day"] == t0.date())
     gap_day = next(d for d in daily if d["day"] == (t0 + timedelta(days=1)).date())
@@ -485,5 +519,9 @@ async def test_migrations_roundtrip():
         tables = (await session.execute(text(
             "SELECT table_name FROM information_schema.tables"
             " WHERE table_schema = 'public'"))).scalars().all()
+        matviews = (await session.execute(text(
+            "SELECT matviewname FROM pg_matviews"
+            " WHERE schemaname = 'public'"))).scalars().all()
+    relations = set(tables) | set(matviews)
     assert {"mast", "turbine", "power_curve_points", "site", "measurements",
-            "ingest_runs", "daily_energy", "hourly_energy"} <= set(tables)
+            "ingest_runs", "daily_energy", "hourly_energy"} <= relations

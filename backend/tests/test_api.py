@@ -87,6 +87,9 @@ async def test_daily_endpoint_daily_energy(db, clean, reference, measurement_row
         measurement_row(t0 + HOUR, 6.0, qc_note="kein Messwert geliefert"),
     ])
     await db.commit()
+    # In production the backfill refreshes the matview after commit; mirror
+    # that here so the endpoint reads the freshly upserted hours.
+    await repo.refresh_energy_matview(db, concurrently=False)
     daily = await api_mod.daily(30)
     today = next(p for p in daily if p["day"] == t0.date())
     assert today["energy_kwh"] is not None
@@ -104,6 +107,7 @@ async def test_metrics_endpoint_chain_and_staleness(
 ):
     await repo.upsert_measurements(db, [measurement_row(hour, 10.0)])
     await db.commit()
+    await repo.refresh_energy_matview(db, concurrently=False)
     payload = await api_mod.metrics()
 
     # α = 0.2 → hub speed 10·(140/100)^0.2 ≈ 10.6964 → curve slope 180 kW/(m/s)

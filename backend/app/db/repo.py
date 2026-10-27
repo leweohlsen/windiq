@@ -93,67 +93,109 @@ async def interpolate_gaps(
 
     `defects` are this run's rejected hours (one dict per defected
     `NormalizedHour`: ts, note, updated_at, version, wind_speed_raw,
-    timestamp_raw, wind_dir). The statement runs over the **whole stored
-    range** every ingest, so it self-heals: it fills hours the API never
-    delivered (reason "Stunde nicht geliefert"), recomputes previously
-    interpolated rows whose anchors changed (keeping their note), and writes
-    a defect hour only when its rejected revision is not superseded by an
-    already-stored real one. Anchors are real rows (`qc_note IS NULL`) only,
-    so interpolations never anchor on interpolations.
+    timestamp_raw, wind_dir). The whole stored range is walked every ingest
+    in three statements, so the fill self-heals without any state. All three
+    write interpolated rows only (never anchors), so each sees the same
+    real-row anchor set — with it they decompose the old single-statement
+    pass statement by statement:
 
-    Interpolated rows carry the defect revision's (updated_at, version) —
-    safe for the sync watermark — or the bounding anchor's when the API never
-    delivered the hour. `upsert_measurements` lets any real revision replace
-    an interpolated row afterwards, so real data always wins eventually.
+    1. recompute stored interpolated rows — their anchors may have moved
+       this run; note and stamps stay, unchanged rows are no-ops via the
+       conflict guard. Runs first, on the pre-ingest state, so it
+       re-anchors exactly the rows interpolated before this run.
+    2. fill never-delivered hours — every hour of the stored bounds with
+       neither a stored row nor a defect in this payload becomes a
+       "Stunde nicht geliefert" row that inherits the bounding lead
+       anchor's revision (the sync watermark never runs ahead of the API)
+       and the lag anchor's wind direction.
+    3. write this run's defect hours unless a stored **real** revision
+       (`qc_note IS NULL`) already supersedes the defect's
+       (updated_at, version). The row then carries the defect revision's
+       stamp — still watermark-safe — plus its rejected raws as audit.
+
+    Anchors are real rows (`qc_note IS NULL`) only, so interpolations never
+    anchor on interpolations. `upsert_measurements` lets any real revision
+    replace an interpolated row afterwards, so real data always wins
+    eventually.
     """
+    await session.execute(text("""
+        WITH defects AS (
+            SELECT d.ts FROM jsonb_to_recordset(CAST(:defects AS jsonb))
+                 AS d(ts timestamptz)
+        ), targets AS (
+            SELECT timestamp, qc_note, updated_at, version,
+                   wind_speed_raw, timestamp_raw, wind_dir_deg
+              FROM measurements
+             WHERE qc_note IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM defects d WHERE d.ts = timestamp)
+        ), framed AS (
+            SELECT t.timestamp, t.qc_note, t.updated_at, t.version,
+                   t.wind_speed_raw, t.timestamp_raw, t.wind_dir_deg,
+                   lag_m.wind_speed_ms        AS v_from,
+                   lag_m.timestamp            AS t_from,
+                   lead_m.wind_speed_ms       AS v_to,
+                   lead_m.timestamp           AS t_to
+              FROM targets t
+              LEFT JOIN LATERAL (
+                   SELECT * FROM measurements
+                    WHERE timestamp < t.timestamp AND qc_note IS NULL
+                    ORDER BY timestamp DESC LIMIT 1) lag_m ON true
+              LEFT JOIN LATERAL (
+                   SELECT * FROM measurements
+                    WHERE timestamp > t.timestamp AND qc_note IS NULL
+                    ORDER BY timestamp ASC LIMIT 1) lead_m ON true
+             WHERE lag_m.wind_speed_ms IS NOT NULL
+               AND lead_m.wind_speed_ms IS NOT NULL
+        )
+        INSERT INTO measurements (mast_id, timestamp, timestamp_raw,
+                                  wind_speed_ms, wind_speed_raw, wind_dir_deg,
+                                  qc_note, version, updated_at)
+        SELECT :mast_id,
+               f.timestamp,
+               f.timestamp_raw,
+               f.v_from + (f.v_to - f.v_from)
+                    * EXTRACT(EPOCH FROM f.timestamp - f.t_from)
+                    / EXTRACT(EPOCH FROM f.t_to - f.t_from),
+               f.wind_speed_raw,
+               f.wind_dir_deg,
+               f.qc_note,
+               f.version,
+               f.updated_at
+          FROM framed f
+          ON CONFLICT (mast_id, timestamp) DO UPDATE
+             SET timestamp_raw  = EXCLUDED.timestamp_raw,
+                 wind_speed_ms  = EXCLUDED.wind_speed_ms,
+                 wind_speed_raw = EXCLUDED.wind_speed_raw,
+                 wind_dir_deg   = EXCLUDED.wind_dir_deg,
+                 qc_note        = EXCLUDED.qc_note,
+                 version        = EXCLUDED.version,
+                 updated_at     = EXCLUDED.updated_at
+           WHERE measurements.wind_speed_ms IS DISTINCT FROM EXCLUDED.wind_speed_ms
+              OR measurements.qc_note       IS DISTINCT FROM EXCLUDED.qc_note
+    """), {"defects": json.dumps(defects), "mast_id": mast_id})
+
     await session.execute(text("""
         WITH bounds AS (
             SELECT MIN(timestamp) AS lo, MAX(timestamp) AS hi FROM measurements
         ), hours AS (
             SELECT generate_series(lo, hi, interval '1 hour') AS ts FROM bounds
         ), defects AS (
-            SELECT d.ts AS timestamp, d.note, d.updated_at, d.version,
-                   d.wind_speed_raw, d.timestamp_raw, d.wind_dir
-              FROM jsonb_to_recordset(CAST(:defects AS jsonb))
-                   AS d(ts timestamptz, note text, updated_at timestamptz,
-                        version int, wind_speed_raw text, timestamp_raw text,
-                        wind_dir int)
+            SELECT d.ts FROM jsonb_to_recordset(CAST(:defects AS jsonb))
+                 AS d(ts timestamptz)
         ), targets AS (
             SELECT h.ts FROM hours h
               LEFT JOIN measurements m ON m.timestamp = h.ts
              WHERE m.timestamp IS NULL
-            UNION
-            SELECT d.timestamp FROM defects d
-             WHERE NOT EXISTS (
-                   SELECT 1 FROM measurements m
-                    WHERE m.timestamp = d.timestamp
-                      AND m.qc_note IS NULL
-                      AND (m.updated_at, m.version) >= (d.updated_at, d.version))
-            UNION
-            SELECT timestamp FROM measurements WHERE qc_note IS NOT NULL
-        ), stored_interp AS (
-            SELECT timestamp, qc_note, updated_at, version,
-                   wind_speed_raw, timestamp_raw, wind_dir_deg
-              FROM measurements
-             WHERE qc_note IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM defects d WHERE d.ts = h.ts)
         ), framed AS (
             SELECT t.ts                       AS timestamp,
                    lag_m.wind_speed_ms        AS v_from,
                    lag_m.timestamp            AS t_from,
                    lead_m.wind_speed_ms       AS v_to,
                    lead_m.timestamp           AS t_to,
-                   lag_m.wind_dir_deg         AS dir_from,
-                   COALESCE(d.note, si.qc_note, 'Stunde nicht geliefert')                                              AS qc_note,
-                   COALESCE(d.updated_at, si.updated_at, lead_m.updated_at)
-                                              AS updated_at,
-                   COALESCE(d.version, si.version, lead_m.version, 0)
-                                              AS version,
-                   COALESCE(d.wind_speed_raw, si.wind_speed_raw, '')
-                                              AS wind_speed_raw,
-                   COALESCE(d.timestamp_raw, si.timestamp_raw, '')
-                                              AS timestamp_raw,
-                   COALESCE(d.wind_dir, si.wind_dir_deg, lag_m.wind_dir_deg)
-                                              AS wind_dir_deg
+                   lag_m.wind_dir_deg         AS wind_dir_deg,
+                   lead_m.updated_at          AS updated_at,
+                   lead_m.version             AS version
               FROM targets t
               LEFT JOIN LATERAL (
                    SELECT * FROM measurements
@@ -163,9 +205,70 @@ async def interpolate_gaps(
                    SELECT * FROM measurements
                     WHERE timestamp > t.ts AND qc_note IS NULL
                     ORDER BY timestamp ASC LIMIT 1) lead_m ON true
-              LEFT JOIN defects d ON d.timestamp = t.ts
-              LEFT JOIN stored_interp si ON si.timestamp = t.ts
              WHERE lag_m.wind_speed_ms IS NOT NULL
+               AND lead_m.wind_speed_ms IS NOT NULL
+        )
+        INSERT INTO measurements (mast_id, timestamp, timestamp_raw,
+                                  wind_speed_ms, wind_speed_raw, wind_dir_deg,
+                                  qc_note, version, updated_at)
+        SELECT :mast_id,
+               f.timestamp,
+               '',
+               f.v_from + (f.v_to - f.v_from)
+                    * EXTRACT(EPOCH FROM f.timestamp - f.t_from)
+                    / EXTRACT(EPOCH FROM f.t_to - f.t_from),
+               '',
+               f.wind_dir_deg,
+               'Stunde nicht geliefert',
+               f.version,
+               f.updated_at
+          FROM framed f
+          ON CONFLICT (mast_id, timestamp) DO UPDATE
+             SET timestamp_raw  = EXCLUDED.timestamp_raw,
+                 wind_speed_ms  = EXCLUDED.wind_speed_ms,
+                 wind_speed_raw = EXCLUDED.wind_speed_raw,
+                 wind_dir_deg   = EXCLUDED.wind_dir_deg,
+                 qc_note        = EXCLUDED.qc_note,
+                 version        = EXCLUDED.version,
+                 updated_at     = EXCLUDED.updated_at
+           WHERE measurements.wind_speed_ms IS DISTINCT FROM EXCLUDED.wind_speed_ms
+              OR measurements.qc_note       IS DISTINCT FROM EXCLUDED.qc_note
+    """), {"defects": json.dumps(defects), "mast_id": mast_id})
+
+    await session.execute(text("""
+        WITH defects AS (
+            SELECT d.ts AS timestamp, d.note AS qc_note, d.updated_at,
+                   d.version, d.wind_speed_raw, d.timestamp_raw, d.wind_dir
+              FROM jsonb_to_recordset(CAST(:defects AS jsonb))
+                   AS d(ts timestamptz, note text, updated_at timestamptz,
+                        version int, wind_speed_raw text, timestamp_raw text,
+                        wind_dir int)
+        ), framed AS (
+            SELECT d.timestamp, d.qc_note, d.updated_at, d.version,
+                   d.wind_speed_raw, d.timestamp_raw,
+                   COALESCE(d.wind_dir, si.wind_dir_deg, lag_m.wind_dir_deg)
+                                                             AS wind_dir_deg,
+                   lag_m.wind_speed_ms                       AS v_from,
+                   lag_m.timestamp                           AS t_from,
+                   lead_m.wind_speed_ms                      AS v_to,
+                   lead_m.timestamp                          AS t_to
+              FROM defects d
+              LEFT JOIN measurements si
+                     ON si.timestamp = d.timestamp AND si.qc_note IS NOT NULL
+              LEFT JOIN LATERAL (
+                   SELECT * FROM measurements
+                    WHERE timestamp < d.timestamp AND qc_note IS NULL
+                    ORDER BY timestamp DESC LIMIT 1) lag_m ON true
+              LEFT JOIN LATERAL (
+                   SELECT * FROM measurements
+                    WHERE timestamp > d.timestamp AND qc_note IS NULL
+                    ORDER BY timestamp ASC LIMIT 1) lead_m ON true
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM measurements m
+                    WHERE m.timestamp = d.timestamp
+                      AND m.qc_note IS NULL
+                      AND (m.updated_at, m.version) >= (d.updated_at, d.version))
+               AND lag_m.wind_speed_ms IS NOT NULL
                AND lead_m.wind_speed_ms IS NOT NULL
         )
         INSERT INTO measurements (mast_id, timestamp, timestamp_raw,
@@ -224,6 +327,34 @@ async def upsert_site(session: AsyncSession, values: dict[str, Any]) -> bool:
     return (await session.execute(_upsert_stmt(Site, values))).rowcount > 0
 
 
+async def refresh_energy_matview(
+    session: AsyncSession, *, concurrently: bool = True
+) -> None:
+    """Recompute `hourly_energy` (and, transitively, `daily_energy`).
+
+    Runs **outside** any ingest transaction after the store commit: REFRESH
+    takes ACCESS EXCLUSIVE immediately (a plain in-tx refresh after the
+    minutes-long ingest transaction would block readers for that whole
+    span), and CONCURRENTLY may not run inside a transaction block at all —
+    hence the AUTOCOMMIT connection there.
+
+    Accepted gap: a crash between the ingest commit and this refresh leaves
+    the matview one run stale until the next run (~5 min cron cadence); no
+    staleness guard at this data volume. Refresh is unconditional —
+    `persist_reference` may have changed mast/turbine/site (shear, heights,
+    curve) with zero measurement writes, and those feed the matview math.
+    """
+    statement = "REFRESH MATERIALIZED VIEW {}hourly_energy".format(
+        "CONCURRENTLY " if concurrently else ""
+    )
+    if concurrently:
+        conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+        await conn.execute(text(statement))
+    else:
+        await session.execute(text(statement))
+        await session.commit()
+
+
 def _latest_measurement_stmt():
     return Measurement.__table__.select().order_by(
         Measurement.timestamp.desc()
@@ -238,148 +369,34 @@ async def latest_measurement(session: AsyncSession) -> Optional[Any]:
 async def aep_trailing_12m(session: AsyncSession) -> dict[str, Any]:
     """AEP gross (kWh) and usable hours over the trailing 12 months.
 
-    Same set-based speed→power layering as the daily series — the views do
-    power interpolation per row, which dominated the endpoint's runtime.
+    Straight aggregation over the `hourly_energy` matview; refresh cadence
+    and staleness contract are documented on `refresh_energy_matview`.
     """
-    result = await session.execute(text(f"""
-        WITH {_CURVE_PTS_SQL}
-        , hourly AS (
-            SELECT m.timestamp,
-                   m.wind_speed_ms * POWER(t.hub_height_m
-                                           / mast.measurement_height_m,
-                                           s.shear_exponent) AS speed_hub_ms
-              FROM measurements m
-              JOIN mast  ON mast.id = m.mast_id
-              CROSS JOIN turbine t
-              CROSS JOIN site s
-             WHERE m.timestamp >= now() - interval '12 months'
-        ), {_CURVE_SPEEDS_SQL}
-        SELECT COALESCE(SUM(COALESCE(p.power_kw, 0)), 0) AS aep_gross_kwh,
-               COUNT(*)                                  AS usable_hours,
-               MIN(h.timestamp)                          AS window_start,
-               MAX(h.timestamp)                          AS window_end
-          FROM hourly h
-          LEFT JOIN speeds p ON p.speed_hub_ms = h.speed_hub_ms
+    result = await session.execute(text("""
+        SELECT COALESCE(SUM(energy_kwh), 0) AS aep_gross_kwh,
+               COUNT(*)                     AS usable_hours,
+               MIN(timestamp)               AS window_start,
+               MAX(timestamp)               AS window_end
+          FROM hourly_energy
+         WHERE timestamp >= now() - interval '12 months'
     """))
     return dict(result.mappings().one())
-
-
-# --- energy-series SQL layers ----------------------------------------------
-# Shared curve/how-the-power-is-built layers, assembled into single-statement
-# queries (one round trip is what keeps them fast). Query-specific layers
-# (hourly row shape, per-day rollup) stay next to their function.
-#
-#   pts     — the power curve as line segments [ws_prev, ws] → linear in between
-#   speeds  — interpolated power per DISTINCT hub speed (1599 of ~8600 rows);
-#             per-row interpolation via power_at() dominated runtime before
-
-# Segment table for the linear interpolation, identical to power_at()'s inner
-# window; combined with the speed guard in the join it IS power_at(), set-based.
-_CURVE_PTS_SQL = """
-    pts AS (
-        SELECT wind_speed_ms AS ws, power_kw AS kw,
-               LAG(wind_speed_ms) OVER (ORDER BY wind_speed_ms) AS ws_prev,
-               LAG(power_kw)      OVER (ORDER BY wind_speed_ms) AS kw_prev
-          FROM power_curve_points
-    )
-"""
-
-# Speed → power lookup, one interpolation per distinct hub speed. The DISTINCT
-# ON tie-break (lowest segment start) matches power_at()'s ORDER/LIMIT, so the
-# two produce identical numbers. Speeds off the curve have no segment and stay
-# NULL — power_at() maps them to 0, hence the COALESCE on consumption.
-# Reads from a CTE named `hourly`; must be listed after it in the WITH.
-_CURVE_SPEEDS_SQL = """
-    speeds AS (
-        SELECT DISTINCT ON (d.speed_hub_ms)
-               d.speed_hub_ms,
-               dt.kw_prev + (dt.kw - dt.kw_prev)
-                          * (d.speed_hub_ms - dt.ws_prev) / (dt.ws - dt.ws_prev) AS power_kw
-          FROM (SELECT DISTINCT speed_hub_ms FROM hourly) d
-          JOIN pts dt
-            ON dt.ws_prev IS NOT NULL
-           AND dt.ws_prev <= d.speed_hub_ms
-           AND dt.ws      >= d.speed_hub_ms
-         ORDER BY d.speed_hub_ms, dt.ws
-    )
-"""
-
-# --- daily-series SQL layers -----------------------------------------------
-#   hourly  — measurement rows with hub-height speed (heavier view logic,
-#             kept date-filtered here so the curve math runs on window data only)
-#   ok      — one row per day: energy, hour count, mean/max mast speed
-
-# Hour rows: date, raw mast speed, and mast speed re-scaled to hub height
-# (shear-exponent profile from measurement height to hub height).
-_DAILY_HOURLY_SQL = """
-    hourly AS (
-        SELECT (m.timestamp AT TIME ZONE 'UTC')::date AS day,
-               m.wind_speed_ms AS speed_mast_ms,
-               m.wind_speed_ms * POWER(t.hub_height_m
-                                       / mast.measurement_height_m,
-                                       s.shear_exponent) AS speed_hub_ms
-          FROM measurements m
-          JOIN mast  ON mast.id = m.mast_id
-          CROSS JOIN turbine t
-          CROSS JOIN site s
-         WHERE (m.timestamp AT TIME ZONE 'UTC')::date
-               >= (now() - make_interval(days => :days))::date
-    )
-"""
-
-# Speed → power lookup, one interpolation per distinct hub speed. The DISTINCT
-# ON tie-break (lowest segment start) matches power_at()'s ORDER/LIMIT, so the
-# two produce identical numbers. Speeds off the curve have no segment and stay
-# NULL — power_at() maps them to 0, hence the COALESCE on consumption.
-_DAILY_SPEEDS_SQL = """
-    speeds AS (
-        SELECT DISTINCT ON (d.speed_hub_ms)
-               d.speed_hub_ms,
-               dt.kw_prev + (dt.kw - dt.kw_prev)
-                          * (d.speed_hub_ms - dt.ws_prev) / (dt.ws - dt.ws_prev) AS power_kw
-          FROM (SELECT DISTINCT speed_hub_ms FROM hourly) d
-          JOIN pts dt
-            ON dt.ws_prev IS NOT NULL
-           AND dt.ws_prev <= d.speed_hub_ms
-           AND dt.ws      >= d.speed_hub_ms
-         ORDER BY d.speed_hub_ms, dt.ws
-    )
-"""
-
-# Per-day energy rollup over the ok hours.
-_DAILY_OK_SQL = """
-    ok AS (
-        SELECT h.day,
-               SUM(COALESCE(p.power_kw, 0)) AS energy_kwh,
-               COUNT(*)                     AS hours,
-               AVG(h.speed_mast_ms)         AS mean_wind_ms,
-               MAX(h.speed_mast_ms)         AS max_wind_ms
-          FROM hourly h
-          LEFT JOIN speeds p ON p.speed_hub_ms = h.speed_hub_ms
-         GROUP BY 1
-    )
-"""
 
 
 async def daily_series(session: AsyncSession, days: int = 90) -> list[dict]:
     """Per-day energy series, oldest first.
 
-    Assembled from the layer fragments above into a single statement. Every
-    day of the window is present; days without any stored hour come back with
-    NULL energy (a data gap the SPA renders empty).
+    Every day of the window is present; days without any stored hour come
+    back with NULL energy (a data gap the SPA renders empty). The mast is a
+    singleton, so `daily_energy` is joined without a mast key.
     """
-    result = await session.execute(
-        text(f"""
-        WITH {_CURVE_PTS_SQL}, {_DAILY_HOURLY_SQL}, {_CURVE_SPEEDS_SQL}, {_DAILY_OK_SQL}
-        , days AS (
-            SELECT generate_series(
-                       (now() - make_interval(days => :days))::date,
-                       now()::date,
-                       interval '1 day')::date AS day
-        )
-        SELECT d.day, o.energy_kwh, o.hours, o.mean_wind_ms, o.max_wind_ms
-          FROM days d
-          LEFT JOIN ok o ON o.day = d.day
+    result = await session.execute(text("""
+        SELECT d.day, de.energy_kwh, de.hours, de.mean_wind_ms, de.max_wind_ms
+          FROM (SELECT generate_series(
+                           (now() - make_interval(days => :days))::date,
+                           now()::date,
+                           interval '1 day')::date AS day) AS d
+          LEFT JOIN daily_energy de ON de.day = d.day
          ORDER BY d.day
     """), {"days": days})
     return [dict(row) for row in result.mappings().all()]
