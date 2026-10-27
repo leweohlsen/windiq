@@ -11,13 +11,10 @@ import { area as d3Area, curveMonotoneX, line as d3Line } from "@visx/vendor/d3-
 
 import type { PowerCurvePoint, TurbineDetail } from "../api";
 import { asNum } from "../format";
+import { CHART, axisProps } from "./chart/theme";
 import { ChartTooltip } from "./chart/ChartTooltip";
 import { clampIndex } from "./chart/helpers";
 import { useChartSize } from "./chart/useChartSize";
-
-const LINE = "#3b82f6";
-const MUTED = "#6b7280";
-const GRID = "#e4e8ef";
 
 const margin = { top: 20, right: 12, bottom: 26, left: 48 };
 
@@ -95,8 +92,8 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                 <svg ref={svgRef} width={width} height={height}>
                   <defs>
                     <linearGradient id="power-curve-fill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={LINE} stopOpacity={0.35} />
-                      <stop offset="100%" stopColor={LINE} stopOpacity={0.02} />
+                      <stop offset="0%" stopColor={CHART.blue} stopOpacity={0.32} />
+                      <stop offset="100%" stopColor={CHART.blue} stopOpacity={0.02} />
                     </linearGradient>
                   </defs>
                   <g transform={`translate(${margin.left},${margin.top})`}>
@@ -108,8 +105,7 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                           x2={innerW}
                           y1={yScale(t)}
                           y2={yScale(t)}
-                          stroke={GRID}
-                          strokeDasharray="3 3"
+                          stroke={CHART.grid}
                         />
                       ))}
                     </g>
@@ -118,7 +114,7 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                       x2={innerW}
                       y1={yScale(turbine.rated_power_kw)}
                       y2={yScale(turbine.rated_power_kw)}
-                      stroke={MUTED}
+                      stroke={CHART.marker}
                       strokeDasharray="4 4"
                     />
                     <text
@@ -126,7 +122,7 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                       y={yScale(turbine.rated_power_kw) - 6}
                       textAnchor="end"
                       fontSize={11}
-                      fill={MUTED}
+                      fill={CHART.marker}
                     >
                       Nennleistung {asNum(turbine.rated_power_kw, 0)} kW
                     </text>
@@ -135,14 +131,14 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                       x2={xScale(turbine.cut_in_wind_speed_ms)}
                       y1={0}
                       y2={innerH}
-                      stroke={MUTED}
+                      stroke={CHART.marker}
                       strokeDasharray="4 4"
                     />
                     <text
                       x={xScale(turbine.cut_in_wind_speed_ms) + 4}
                       y={10}
                       fontSize={11}
-                      fill={MUTED}
+                      fill={CHART.marker}
                     >
                       Cut-in {asNum(turbine.cut_in_wind_speed_ms, 1)}
                     </text>
@@ -151,7 +147,7 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                       x2={xScale(turbine.cut_out_wind_speed_ms)}
                       y1={0}
                       y2={innerH}
-                      stroke={MUTED}
+                      stroke={CHART.marker}
                       strokeDasharray="4 4"
                     />
                     <text
@@ -159,29 +155,30 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                       y={innerH - 5}
                       textAnchor="end"
                       fontSize={11}
-                      fill={MUTED}
+                      fill={CHART.marker}
                     >
                       Cut-out {asNum(turbine.cut_out_wind_speed_ms, 1)}
                     </text>
                     <path d={areaPath} fill="url(#power-curve-fill)" stroke="none" />
-                    <path d={linePath} fill="none" stroke={LINE} strokeWidth={2} />
+                    <path
+                      d={linePath}
+                      fill="none"
+                      stroke={CHART.blue}
+                      strokeWidth={2.5}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
                     <AxisBottom
                       top={innerH}
                       scale={xScale}
                       tickValues={xTicks(turbine)}
                       tickFormat={(v) => Number(v).toFixed(0)}
-                      tickLength={4}
-                      stroke={GRID}
-                      tickStroke={GRID}
-                      tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
+                      {...axisProps}
                     />
                     <AxisLeft
                       scale={yScale}
                       tickFormat={(v) => Number(v).toFixed(0)}
-                      tickLength={4}
-                      stroke={GRID}
-                      tickStroke={GRID}
-                      tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
+                      {...axisProps}
                     />
                     {hover && hovered && (
                       <g pointerEvents="none">
@@ -190,17 +187,17 @@ export const ReferenceTurbine = memo(function ReferenceTurbine({
                           x2={xScale(hovered.wind_speed_ms)}
                           y1={0}
                           y2={innerH}
-                          stroke={MUTED}
-                          strokeDasharray="3 3"
-                          opacity={0.5}
+                          stroke={CHART.hover}
+                          strokeDasharray="3 4"
+                          opacity={0.6}
                         />
                         <circle
                           cx={xScale(hovered.wind_speed_ms)}
                           cy={yScale(hovered.power_kw)}
-                          r={4}
-                          fill={LINE}
+                          r={4.5}
+                          fill={CHART.blue}
                           stroke="#fff"
-                          strokeWidth={1.5}
+                          strokeWidth={2}
                         />
                       </g>
                     )}

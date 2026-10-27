@@ -11,19 +11,18 @@
 import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AxisBottom, AxisLeft } from "@visx/axis";
 import { scaleLinear } from "@visx/scale";
-import { area as d3Area, line as d3Line } from "@visx/vendor/d3-shape";
+import { area as d3Area, curveMonotoneX, line as d3Line } from "@visx/vendor/d3-shape";
 
 import type { RoseSector, WindPoint, WindResponse } from "../api";
 import { asBucket, asHours, asMs } from "../format";
+import { CHART, axisProps } from "./chart/theme";
 import { ChartTooltip } from "./chart/ChartTooltip";
 import { clampIndex, polarPoint, strideTicks } from "./chart/helpers";
 import { useChartSize } from "./chart/useChartSize";
 import { BrushStrip } from "./BrushStrip";
 
-const LINE = "#b45309";
-const INTERPOLATED = "#f59e0b"; // filled gap hours
-const MUTED = "#667085";
-const GRID = "#e4e8ef";
+/** Rose rings sit on the violet fill, so they need to read against it. */
+const ROSE_RING = "#e2e8f0";
 /** Whole-year hourly series render fine; above this, per-point dot markers
  * stop being distinguishable anyway. */
 const DOT_LIMIT = 1_000;
@@ -130,6 +129,12 @@ function WindRose({ rose }: { rose: RoseSector[] }) {
           onPointerMove={onMove}
           onPointerLeave={() => setHover(null)}
         >
+          <defs>
+            <linearGradient id="rose-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={CHART.violet} stopOpacity={0.45} />
+              <stop offset="100%" stopColor={CHART.violet} stopOpacity={0.12} />
+            </linearGradient>
+          </defs>
           {rings.map((frac) => (
             <circle
               key={frac}
@@ -137,12 +142,13 @@ function WindRose({ rose }: { rose: RoseSector[] }) {
               cy={cy}
               r={outer * frac}
               fill="none"
-              stroke={GRID}
-              strokeDasharray="3 3"
+              stroke={ROSE_RING}
             />
           ))}
           {rose.map((_, i) => {
-            const tip = polarPoint(cx, cy, outer, i * COMPASS_STEP);
+            const deg = i * COMPASS_STEP;
+            const tip = polarPoint(cx, cy, outer, deg);
+            const isHover = hover?.idx === i;
             return (
               <line
                 key={i}
@@ -150,23 +156,24 @@ function WindRose({ rose }: { rose: RoseSector[] }) {
                 y1={cy}
                 x2={tip.x}
                 y2={tip.y}
-                stroke={GRID}
-                strokeDasharray="3 3"
+                stroke={isHover ? CHART.violet : ROSE_RING}
+                strokeWidth={isHover ? 1.5 : 1}
               />
             );
           })}
           {rose.length > 0 && (
             <polygon
               points={polygon}
-              fill={LINE}
-              fillOpacity={0.4}
-              stroke={LINE}
-              strokeWidth={1.5}
+              fill="url(#rose-fill)"
+              stroke={CHART.violet}
+              strokeWidth={2}
+              strokeLinejoin="round"
             />
           )}
           {rose.map((_, i) => {
             const deg = i * COMPASS_STEP;
             const p = polarPoint(cx, cy, outer + 13, deg);
+            const isHover = hover?.idx === i;
             return (
               <text
                 key={deg}
@@ -174,7 +181,8 @@ function WindRose({ rose }: { rose: RoseSector[] }) {
                 y={p.y}
                 textAnchor={deg === 0 || deg === 180 ? "middle" : deg < 180 ? "start" : "end"}
                 fontSize={11}
-                fill={MUTED}
+                fontWeight={isHover ? 600 : 500}
+                fill={isHover ? CHART.violet : CHART.marker}
                 dy={deg === 0 ? -1 : deg === 180 ? 8 : 3.5}
               >
                 {COMPASS[i]}
@@ -232,6 +240,7 @@ function WindSpeedChart({
   const bandPath = useMemo(
     () =>
       d3Area<WindPoint>()
+        .curve(curveMonotoneX)
         .defined((p) => p.min_wind_ms != null && p.max_wind_ms != null)
         .x((_p, i) => xScale(i))
         .y0((p) => yScale(p.min_wind_ms!))
@@ -241,6 +250,7 @@ function WindSpeedChart({
   const meanPath = useMemo(
     () =>
       d3Line<WindPoint>()
+        .curve(curveMonotoneX)
         .defined((p) => p.mean_wind_ms != null)
         .x((_p, i) => xScale(i))
         .y((p) => yScale(p.mean_wind_ms!))(series) ?? "",
@@ -278,42 +288,41 @@ function WindSpeedChart({
     <div ref={ref} className="chart-inner">
       {ready && (
         <svg ref={svgRef} width={width} height={height}>
+          <defs>
+            <linearGradient id="speed-band-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={CHART.violet} stopOpacity={0.22} />
+              <stop offset="100%" stopColor={CHART.violet} stopOpacity={0.04} />
+            </linearGradient>
+          </defs>
           <g transform={`translate(${margin.left},${margin.top})`}>
-            <g>
-              {yScale.ticks(4).map((t) => (
-                <line
-                  key={`h${t}`}
-                  x1={0}
-                  x2={innerW}
-                  y1={yScale(t)}
-                  y2={yScale(t)}
-                  stroke={GRID}
-                  strokeDasharray="3 3"
-                />
-              ))}
-              {xTicks.map((i) => (
-                <line
-                  key={`v${i}`}
-                  x1={xScale(i)}
-                  x2={xScale(i)}
-                  y1={0}
-                  y2={innerH}
-                  stroke={GRID}
-                  strokeDasharray="3 3"
-                />
-              ))}
-            </g>
-            <path d={bandPath} fill={LINE} fillOpacity={0.15} stroke="none" />
-            <path d={meanPath} fill="none" stroke={LINE} strokeWidth={2} />
+            {yScale.ticks(4).map((t) => (
+              <line
+                key={`h${t}`}
+                x1={0}
+                x2={innerW}
+                y1={yScale(t)}
+                y2={yScale(t)}
+                stroke={CHART.grid}
+              />
+            ))}
+            <path d={bandPath} fill="url(#speed-band-fill)" stroke="none" />
+            <path
+              d={meanPath}
+              fill="none"
+              stroke={CHART.violet}
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
             {interpDots.map(({ i, y, ts }) => (
               <circle
                 key={ts}
                 cx={xScale(i)}
                 cy={y}
                 r={3.5}
-                fill={INTERPOLATED}
+                fill={CHART.amber}
                 stroke="#fff"
-                strokeWidth={1}
+                strokeWidth={1.5}
               />
             ))}
             <AxisBottom
@@ -321,18 +330,12 @@ function WindSpeedChart({
               scale={xScale}
               tickValues={xTicks}
               tickFormat={(v) => asBucket(series[Number(v)]?.timestamp ?? "", resolution)}
-              tickLength={4}
-              stroke={GRID}
-              tickStroke={GRID}
-              tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
+              {...axisProps}
             />
             <AxisLeft
               scale={yScale}
               tickFormat={(v) => Number(v).toFixed(0)}
-              tickLength={4}
-              stroke={GRID}
-              tickStroke={GRID}
-              tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
+              {...axisProps}
             />
             {hover && (
               <g pointerEvents="none">
@@ -341,16 +344,16 @@ function WindSpeedChart({
                   x2={xScale(hover.idx)}
                   y1={0}
                   y2={innerH}
-                  stroke={MUTED}
-                  strokeDasharray="3 3"
-                  opacity={0.5}
+                  stroke={CHART.hover}
+                  strokeDasharray="3 4"
+                  opacity={0.6}
                 />
                 {hovered?.mean_wind_ms != null && (
                   <circle
                     cx={xScale(hover.idx)}
                     cy={yScale(hovered.mean_wind_ms)}
                     r={4}
-                    fill={LINE}
+                    fill={CHART.violet}
                     stroke="#fff"
                     strokeWidth={1.5}
                   />

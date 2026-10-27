@@ -42,7 +42,7 @@ standard in German tech language (AEP, P50/P90, Ingest, QC, m/s, kWh/MWh).
 | wind direction | Windrichtung | Domain |
 | wind rose | Windrose | Domain |
 | mean wind | mittlere Windgeschwindigkeit | Domain |
-| daily energy | Tagesenergie | Domain |
+| daily energy | Tagesertrag | Domain | parallel to "Jahresertrag" (AEP); assignment vocabulary "Ertrag" |
 | trailing 12 months | letzte 12 Monate | Domain |
 | trailing 30 days | letzte 30 Tage | Domain |
 | measurement range | Messzeitraum | Domain |
@@ -98,10 +98,10 @@ translated in data**, only in labels:
 | Header | Measurement range | Messzeitraum |
 | Header | Usable hours | Verwertbare Stunden |
 | Header | hub 140 m / mast 100 m | Nabe 140 m / Mast 100 m |
-| DailyChart | Daily energy (90 days) | Tagesenergie (90 Tage) |
-| DailyChart | Daily energy (legend) | Tagesenergie |
+| DailyChart | Daily energy (90 days) | Tagesertrag (90 Tage) |
+| DailyChart | Daily energy (legend) | Tagesertrag (MWh) |
 | DailyChart | Mean wind (m/s) | Mittlere Windgeschwindigkeit (m/s) |
-| DailyChart | Energy: / Mean wind: / max | Energie: / Mittlerer Wind: / max |
+| DailyChart | Energy: / Mean wind: / max | Ertrag: / Mittlerer Wind: / max |
 | DailyChart | Ok hours: 21/24 | Verwertbare Stunden: 21/24 |
 | WindPanel | Wind rose — … ok hours · trailing 30 days | Windrose — … verwertbare Stunden · letzte 30 Tage |
 | WindPanel | Wind speed — last 48 h (mast height) | Windgeschwindigkeit — letzte {days} Tage, {stündlich\|täglich\|wöchentlich} (Messhöhe) |

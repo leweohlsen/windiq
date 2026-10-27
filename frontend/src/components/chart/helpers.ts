@@ -12,6 +12,21 @@ export function clampIndex(i: number, count: number): number {
   return Math.max(0, Math.min(count - 1, Math.round(i)));
 }
 
+/** Bar path with rounded top corners only (svg rect rx would also round
+ * the baseline end that sits on the axis). */
+export function barPath(x: number, y: number, w: number, h: number, r: number): string {
+  const rr = Math.min(r, w / 2, h / 2);
+  return [
+    `M${x},${y + h}`,
+    `L${x},${y + rr}`,
+    `Q${x},${y} ${x + rr},${y}`,
+    `L${x + w - rr},${y}`,
+    `Q${x + w},${y} ${x + w},${y + rr}`,
+    `L${x + w},${y + h}`,
+    "Z",
+  ].join(" ");
+}
+
 /** deg 0 = north = up, growing clockwise (the rose's bearing convention). */
 export function polarPoint(cx: number, cy: number, r: number, deg: number) {
   const rad = ((deg - 90) * Math.PI) / 180;

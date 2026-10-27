@@ -1,28 +1,24 @@
 /** Daily chart: bars = daily energy (MWh) with per-bar coloring (clean →
- * accent, no ok hours → gap), line = mean wind (m/s) on the second y-axis;
- * tooltip shows mean/max wind. Title and range switcher live in App's panel
- * head. QC tracking moved to the wind panel (plan 2026-10-27).
+ * accent, no ok hours → gap), line = mean wind (m/s) — only the MWh axis is
+ * shown; wind values live in the tooltip. Title and range switcher live in
+ * App's panel head. QC tracking moved to the wind panel (plan 2026-10-27).
  *
  * Hand-rolled SVG via visx primitives (see chart/helpers.ts): one band/point
  * scale for x, two linear y-scales, bar + line paths computed per data
  * change and hover resolved to an index by scale inversion. */
 import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { AxisBottom, AxisLeft, AxisRight } from "@visx/axis";
+import { AxisBottom, AxisLeft } from "@visx/axis";
 import { scaleLinear, scalePoint } from "@visx/scale";
-import { line as d3Line } from "@visx/vendor/d3-shape";
+import { line as d3Line, curveMonotoneX } from "@visx/vendor/d3-shape";
 
 import type { DailyPoint } from "../api";
 import { asMs, asMWh } from "../format";
+import { CHART, axisProps } from "./chart/theme";
 import { ChartTooltip } from "./chart/ChartTooltip";
-import { clampIndex, strideTicks } from "./chart/helpers";
+import { barPath, clampIndex, strideTicks } from "./chart/helpers";
 import { useChartSize } from "./chart/useChartSize";
 
-const CLEAN = "#3b82f6";
-const LINE = "#b45309";
-const MUTED = "#667085";
-const GRID = "#e4e8ef";
-
-const margin = { top: 12, right: 44, bottom: 28, left: 48 };
+const margin = { top: 12, right: 8, bottom: 28, left: 48 };
 
 type Hover = { idx: number; left: number; top: number };
 
@@ -74,6 +70,7 @@ export const DailyChart = memo(function DailyChart({ daily }: { daily: DailyPoin
   const linePath = useMemo(
     () =>
       d3Line<(typeof chartData)[number]>()
+        .curve(curveMonotoneX)
         .defined((p) => p.mean_wind_ms != null)
         .x((p) => xScale(p.day)!)
         .y((p) => yWind(p.mean_wind_ms!))(chartData) ?? "",
@@ -104,12 +101,18 @@ export const DailyChart = memo(function DailyChart({ daily }: { daily: DailyPoin
   const hovered = hover != null ? (chartData[hover.idx] ?? null) : null;
 
   return (
-    <div className="chart">
-      <div ref={ref} className="chart-inner">
-        {ready && (
-          <svg ref={svgRef} width={width} height={height}>
-            <g transform={`translate(${margin.left},${margin.top})`}>
-              <g>
+    <>
+      <div className="chart">
+        <div ref={ref} className="chart-inner">
+          {ready && (
+            <svg ref={svgRef} width={width} height={height}>
+              <defs>
+                <linearGradient id="daily-bar-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#2dd4a7" stopOpacity={0.95} />
+                  <stop offset="100%" stopColor={CHART.green} stopOpacity={0.65} />
+                </linearGradient>
+              </defs>
+              <g transform={`translate(${margin.left},${margin.top})`}>
                 {yEnergy.ticks(4).map((t) => (
                   <line
                     key={`h${t}`}
@@ -117,103 +120,88 @@ export const DailyChart = memo(function DailyChart({ daily }: { daily: DailyPoin
                     x2={innerW}
                     y1={yEnergy(t)}
                     y2={yEnergy(t)}
-                    stroke={GRID}
-                    strokeDasharray="3 3"
+                    stroke={CHART.grid}
                   />
                 ))}
-                {xTicks.map((i) => (
-                  <line
-                    key={`v${i}`}
-                    x1={xScale(days[i]!)}
-                    x2={xScale(days[i]!)}
-                    y1={0}
-                    y2={innerH}
-                    stroke={GRID}
-                    strokeDasharray="3 3"
-                  />
-                ))}
+                {chartData.map((p, i) =>
+                  p.energy_mwh == null ? null : (
+                    <path
+                      key={p.day}
+                      d={barPath(
+                        xScale(p.day)! - barWidth / 2,
+                        yEnergy(p.energy_mwh),
+                        barWidth,
+                        innerH - yEnergy(p.energy_mwh),
+                        Math.min(3, barWidth / 2),
+                      )}
+                      fill="url(#daily-bar-fill)"
+                      opacity={hover != null && hover.idx !== i ? 0.35 : 1}
+                    />
+                  ),
+                )}
+                <path
+                  d={linePath}
+                  fill="none"
+                  stroke={CHART.violet}
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <AxisBottom
+                  top={innerH}
+                  scale={xScale}
+                  tickValues={xTicks.map((i) => days[i]!)}
+                  tickFormat={(day) => `${day.slice(8)}.${day.slice(5, 7)}.`}
+                  {...axisProps}
+                />
+                <AxisLeft
+                  scale={yEnergy}
+                  tickFormat={(v) => Number(v).toFixed(0)}
+                  {...axisProps}
+                />
+                {hover && (
+                  <g pointerEvents="none">
+                    <line
+                      x1={xScale(days[hover.idx]!)}
+                      x2={xScale(days[hover.idx]!)}
+                      y1={0}
+                      y2={innerH}
+                      stroke={CHART.hover}
+                      strokeDasharray="3 4"
+                      opacity={0.6}
+                    />
+                  </g>
+                )}
+                <rect
+                  x={0}
+                  y={0}
+                  width={innerW}
+                  height={innerH}
+                  fill="transparent"
+                  onPointerMove={onMove}
+                  onPointerLeave={() => setHover(null)}
+                />
               </g>
-              {chartData.map((p) =>
-                p.energy_mwh == null ? null : (
-                  <rect
-                    key={p.day}
-                    x={xScale(p.day)! - barWidth / 2}
-                    y={yEnergy(p.energy_mwh)}
-                    width={barWidth}
-                    height={innerH - yEnergy(p.energy_mwh)}
-                    fill={CLEAN}
-                  />
-                ),
-              )}
-              <path d={linePath} fill="none" stroke={LINE} strokeWidth={2} />
-              <AxisBottom
-                top={innerH}
-                scale={xScale}
-                tickValues={xTicks.map((i) => days[i]!)}
-                tickFormat={(day) => day.slice(5)}
-                tickLength={4}
-                stroke={GRID}
-                tickStroke={GRID}
-                tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
-              />
-              <AxisLeft
-                scale={yEnergy}
-                tickFormat={(v) => Number(v).toFixed(0)}
-                tickLength={4}
-                stroke={GRID}
-                tickStroke={GRID}
-                tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
-              />
-              <AxisRight
-                scale={yWind}
-                tickFormat={(v) => Number(v).toFixed(0)}
-                tickLength={4}
-                stroke={GRID}
-                tickStroke={GRID}
-                tickLabelProps={{ fill: MUTED, fontFamily: "inherit", fontSize: 11 }}
-              />
-              {hover && (
-                <g pointerEvents="none">
-                  <line
-                    x1={xScale(days[hover.idx]!)}
-                    x2={xScale(days[hover.idx]!)}
-                    y1={0}
-                    y2={innerH}
-                    stroke={MUTED}
-                    strokeDasharray="3 3"
-                    opacity={0.5}
-                  />
-                </g>
-              )}
-              <rect
-                x={0}
-                y={0}
-                width={innerW}
-                height={innerH}
-                fill="transparent"
-                onPointerMove={onMove}
-                onPointerLeave={() => setHover(null)}
-              />
-            </g>
-          </svg>
-        )}
-        <div className="chart-legend" style={{ bottom: margin.bottom - 2 }}>
-          <span>
-            <span className="swatch" style={{ background: CLEAN }} />
-            Tagesenergie
-          </span>
-          <span>
-            <span className="line-swatch" style={{ background: LINE }} />
-            Mittlere Windgeschwindigkeit (m/s)
-          </span>
+            </svg>
+          )}
+          {hovered && (
+            <ChartTooltip left={hover!.left} top={hover!.top} width={width}>
+              <DailyTooltipContent point={hovered} />
+            </ChartTooltip>
+          )}
         </div>
-        {hovered && (
-          <ChartTooltip left={hover!.left} top={hover!.top} width={width}>
-            <DailyTooltipContent point={hovered} />
-          </ChartTooltip>
-        )}
       </div>
-    </div>
+      <div className="chart-legend">
+        <span>
+          <span className="swatch" style={{ background: CHART.green }} />
+          Tagesertrag (MWh)
+        </span>
+        <span>
+          <span className="line-swatch" style={{ background: CHART.violet }} />
+          Mittlere Windgeschwindigkeit (m/s)
+        </span>
+      </div>
+    </>
   );
 });
 
@@ -222,7 +210,7 @@ function DailyTooltipContent({ point }: { point: DailyPoint }) {
     <>
       <div className="tooltip-title">{new Date(point.day).toLocaleDateString("de-DE")}</div>
       <div>
-        Energie: <strong>{asMWh(point.energy_kwh)} MWh</strong>
+        Ertrag: <strong>{asMWh(point.energy_kwh)} MWh</strong>
       </div>
       <div>
         Mittlerer Wind: {asMs(point.mean_wind_ms)} m/s

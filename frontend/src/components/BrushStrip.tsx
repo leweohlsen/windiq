@@ -8,10 +8,8 @@ import { scaleLinear } from "@visx/scale";
 import { LinePath } from "@visx/shape";
 
 import type { WindPoint } from "../api";
+import { CHART } from "./chart/theme";
 import { useChartSize } from "./chart/useChartSize";
-
-const ACCENT = "#b45309";
-const INTERPOLATED = "#f59e0b";
 
 export function BrushStrip({
   data,
@@ -81,8 +79,9 @@ export function BrushStrip({
             data={data}
             x={(_, i) => xScale(i)}
             y={(d) => (d.mean_wind_ms != null ? yScale(d.mean_wind_ms) : height / 2)}
-            stroke={ACCENT}
-            strokeWidth={1}
+            stroke={CHART.blue}
+            strokeWidth={1.5}
+            strokeLinecap="round"
             fill="none"
           />
           {/* Interpolation ticks at the bottom mirror the speed-chart markers
@@ -96,7 +95,7 @@ export function BrushStrip({
                   cx={xScale(i)}
                   cy={height - 2}
                   r={1.5}
-                  fill={d.mean_wind_ms == null ? ACCENT : INTERPOLATED}
+                  fill={d.mean_wind_ms == null ? CHART.blue : CHART.amber}
                 />
               );
             })}
@@ -111,10 +110,11 @@ export function BrushStrip({
             initialBrushPosition={initialBrushPosition}
             onBrushEnd={handleBrushEnd}
             selectedBoxStyle={{
-              fill: ACCENT,
-              fillOpacity: 0.15,
-              stroke: ACCENT,
-              strokeWidth: 1,
+              fill: CHART.blue,
+              fillOpacity: 0.12,
+              stroke: CHART.blue,
+              strokeWidth: 1.5,
+              rx: 4,
             }}
             useWindowMoveEvents
           />

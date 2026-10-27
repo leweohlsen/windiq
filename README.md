@@ -24,7 +24,7 @@ WindIQ API ──▶ Worker ──Upsert──▶ PostgreSQL ──SQL-Views─�
 3. **Berechnen.** SQL-Views rechnen die Windgeschwindigkeit auf die Nabenhöhe um, lesen die
    Leistungskennlinie aus und summieren zu Tages- und Jahresenergie. Verdächtige, fehlende und
    fehlerhafte Stunden liefern keinen Ertrag; sie erscheinen als Lücke in der Datenabdeckung.
-4. **Anzeigen.** Das Dashboard zeigt P50 und P90, AEP brutto und netto, Tagesenergie, Windrose,
+4. **Anzeigen.** Das Dashboard zeigt P50 und P90, AEP brutto und netto, Tagesertrag, Windrose,
    Winddaten mit QC-Übersicht (2–365 Tage, stündlich/täglich/wöchentlich), Datenalter und Abdeckung sowie den Ingest-Verlauf.
 
 ### Berechnung

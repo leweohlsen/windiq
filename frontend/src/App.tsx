@@ -157,7 +157,7 @@ function DailyHead({
 }) {
   return (
     <div className="panel-head">
-      <h2>Tagesenergie ({days} Tage)</h2>
+      <h2>Tagesertrag ({days} Tage)</h2>
       <div className="range-switch">
         {DAILY_RANGES.map((range) => (
           <button
