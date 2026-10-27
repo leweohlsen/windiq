@@ -136,14 +136,7 @@ function WindRose({ rose }: { rose: RoseSector[] }) {
             </linearGradient>
           </defs>
           {rings.map((frac) => (
-            <circle
-              key={frac}
-              cx={cx}
-              cy={cy}
-              r={outer * frac}
-              fill="none"
-              stroke={ROSE_RING}
-            />
+            <circle key={frac} cx={cx} cy={cy} r={outer * frac} fill="none" stroke={ROSE_RING} />
           ))}
           {rose.map((_, i) => {
             const deg = i * COMPASS_STEP;
@@ -332,11 +325,7 @@ function WindSpeedChart({
               tickFormat={(v) => asBucket(series[Number(v)]?.timestamp ?? "", resolution)}
               {...axisProps}
             />
-            <AxisLeft
-              scale={yScale}
-              tickFormat={(v) => Number(v).toFixed(0)}
-              {...axisProps}
-            />
+            <AxisLeft scale={yScale} tickFormat={(v) => Number(v).toFixed(0)} {...axisProps} />
             {hover && (
               <g pointerEvents="none">
                 <line

@@ -154,11 +154,7 @@ export const DailyChart = memo(function DailyChart({ daily }: { daily: DailyPoin
                   tickFormat={(day) => `${day.slice(8)}.${day.slice(5, 7)}.`}
                   {...axisProps}
                 />
-                <AxisLeft
-                  scale={yEnergy}
-                  tickFormat={(v) => Number(v).toFixed(0)}
-                  {...axisProps}
-                />
+                <AxisLeft scale={yEnergy} tickFormat={(v) => Number(v).toFixed(0)} {...axisProps} />
                 {hover && (
                   <g pointerEvents="none">
                     <line

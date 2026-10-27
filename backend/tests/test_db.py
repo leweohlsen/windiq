@@ -230,7 +230,8 @@ async def test_wind_series_carries_interpolation_notes(
     db, clean, reference, measurement_row, hour
 ):
     """Interpolated hours surface per bucket: count + (aggregated) reasons."""
-    # 12:00 anchor, one day back — all four hours sit inside the 24 h window
+    # 12:00 anchor, one day back — the three hours always sit inside the
+    # 48 h window, whatever the current time of day
     t0 = (hour - timedelta(days=1)).replace(hour=12)
     await repo.upsert_measurements(db, [
         measurement_row(t0 - HOUR_LATER, 5.0),
@@ -239,14 +240,14 @@ async def test_wind_series_carries_interpolation_notes(
     ])
     await db.commit()
 
-    hourly = await repo.wind_series(db, days=1)
+    hourly = await repo.wind_series(db, days=2)
     by_ts = {p["timestamp"]: p for p in hourly}
     assert by_ts[t0]["interpolated_hours"] == 1
     assert by_ts[t0]["qc_note"] == "kein Messwert geliefert"
     # the rejected original of the interpolated hour travels with the bucket
     assert by_ts[t0]["wind_speed_raw"] == "6.0"
 
-    daily = await repo.wind_series(db, days=1, resolution="day")
+    daily = await repo.wind_series(db, days=2, resolution="day")
     day = next(p for p in daily if p["timestamp"].date() == t0.date())
     assert day["interpolated_hours"] == 2
     assert day["qc_note"] == "kein Messwert geliefert; negativer Messwert"
