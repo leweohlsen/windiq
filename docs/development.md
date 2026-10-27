@@ -90,7 +90,7 @@ Customization (auth, retries, timeouts) belongs in the handwritten facade in
 | GET | `/api/health` | liveness, database status, last ingest run, data age |
 | GET | `/api/metrics` | revenue chain (AEP gross/net, P50, P90), coverage, site parameters, data age |
 | GET | `/api/daily?days=` | daily energy, mean wind and QC counts (max 365 days) |
-| GET | `/api/wind?hours=` | hourly wind series and 16-sector wind rose over 30 days (max 168 hours) |
+| GET | `/api/wind?days=&resolution=` | per-bucket wind speed stats (mean/min/max over ok+suspect) + QC counts and 16-sector wind rose over 30 days (max 365 days; resolution: hour/day/week) |
 | GET | `/api/ingest/runs?limit=` | recent ingest runs (max 50) |
 | POST | `/api/ingest/run?mode=sync\|backfill` | queue an ingest; returns `{queued: true}` immediately |
 

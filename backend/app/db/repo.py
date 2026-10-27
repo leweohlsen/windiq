@@ -313,16 +313,61 @@ async def coverage(session: AsyncSession) -> dict[str, Any]:
     return row
 
 
-async def wind_series(session: AsyncSession, hours: int = 48) -> list[dict]:
-    """Trailing hourly speed + direction of ok rows, oldest first."""
-    result = await session.execute(text("""
-        SELECT timestamp, wind_speed_ms, wind_dir_deg
-          FROM measurements
-         WHERE quality = 'ok' AND wind_speed_ms IS NOT NULL
-         ORDER BY timestamp DESC
-         LIMIT :hours
-    """), {"hours": hours})
-    return [dict(row) for row in reversed(result.mappings().all())]
+# Bucket unit + generate_series step per resolution; f-string literals because
+# the unit/step cannot be bound as intervals (asyncpg/SQLAlchemy cast ambiguity).
+_WIND_RESOLUTIONS = {
+    "hour": ("hour", "1 hour"),
+    "day": ("day", "1 day"),
+    "week": ("week", "1 week"),
+}
+
+
+async def wind_series(
+    session: AsyncSession, days: int = 2, resolution: str = "hour"
+) -> list[dict]:
+    """Per-bucket speed stats (every row with a value) + QC counts, oldest first.
+
+    Every bucket of the trailing `days` window is present: flagged and absent
+    hours surface as empty buckets (NULL speeds, zero counts) so the SPA can
+    draw gaps where data is missing. Buckets are UTC (weeks start Monday);
+    mean/min/max cover ok + suspect rows — the original values.
+    """
+    unit, step = _WIND_RESOLUTIONS[resolution]
+    result = await session.execute(text(f"""
+        WITH bounds AS (
+            SELECT date_trunc('{unit}', now() AT TIME ZONE 'UTC')
+                       AT TIME ZONE 'UTC'                                  AS to_ts,
+                   date_trunc('{unit}', now() AT TIME ZONE 'UTC')
+                       AT TIME ZONE 'UTC' - make_interval(days => :days)   AS from_ts
+        ), buckets AS (
+            SELECT generate_series(from_ts, to_ts, interval '{step}') AS bucket
+              FROM bounds
+        ), agg AS (
+            SELECT date_trunc('{unit}', timestamp AT TIME ZONE 'UTC')
+                       AT TIME ZONE 'UTC'                                    AS bucket,
+                   AVG(wind_speed_ms) FILTER (WHERE wind_speed_ms IS NOT NULL) AS mean_wind_ms,
+                   MIN(wind_speed_ms) FILTER (WHERE wind_speed_ms IS NOT NULL) AS min_wind_ms,
+                   MAX(wind_speed_ms) FILTER (WHERE wind_speed_ms IS NOT NULL) AS max_wind_ms,
+                   COUNT(*) FILTER (WHERE quality = 'ok')        AS ok_hours,
+                   COUNT(*) FILTER (WHERE quality = 'suspect')   AS suspect_hours,
+                   COUNT(*) FILTER (WHERE quality = 'missing')   AS missing_hours,
+                   COUNT(*) FILTER (WHERE quality = 'malformed') AS malformed_hours
+              FROM measurements, bounds
+             WHERE timestamp >= from_ts
+               AND timestamp <  to_ts + interval '{step}'
+             GROUP BY 1
+        )
+        SELECT b.bucket AS timestamp,
+               a.mean_wind_ms, a.min_wind_ms, a.max_wind_ms,
+               COALESCE(a.ok_hours, 0)        AS ok_hours,
+               COALESCE(a.suspect_hours, 0)   AS suspect_hours,
+               COALESCE(a.missing_hours, 0)   AS missing_hours,
+               COALESCE(a.malformed_hours, 0) AS malformed_hours
+          FROM buckets b
+          LEFT JOIN agg a USING (bucket)
+         ORDER BY b.bucket
+    """), {"days": days})
+    return [dict(row) for row in result.mappings().all()]
 
 
 # 16 compass sectors spanning 22.5° each, centered on the named direction

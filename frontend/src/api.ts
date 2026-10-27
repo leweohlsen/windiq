@@ -8,4 +8,5 @@ export type {
   RoseSectorOut as RoseSector,
   TurbineDetailOut as TurbineDetail,
   WindOut as WindResponse,
+  WindPointOut as WindPoint,
 } from "./api/generated/windIQAPI.schemas";

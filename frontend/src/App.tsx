@@ -22,12 +22,20 @@ import {
 /** All dashboard GETs share the 60 s cadence (paused while the tab is
  * hidden); unchanged payloads don't re-render (structural sharing). */
 const POLL_MS = 60_000;
-const WIND_HOURS = 48;
 const RUNS_LIMIT = 10;
 const DAILY_RANGES = [30, 90, 365];
+const WIND_RANGES = [2, 7, 30, 90, 365];
+const WIND_RESOLUTIONS = [
+  { value: "hour", label: "Stündlich" },
+  { value: "day", label: "Täglich" },
+  { value: "week", label: "Wöchentlich" },
+] as const;
+type WindResolution = (typeof WIND_RESOLUTIONS)[number]["value"];
 
 function App() {
   const [days, setDays] = useState(90);
+  const [windDays, setWindDays] = useState(2);
+  const [windResolution, setWindResolution] = useState<WindResolution>("hour");
   const queryClient = useQueryClient();
 
   const metrics = useMetrics({ query: { refetchInterval: POLL_MS } });
@@ -37,7 +45,10 @@ function App() {
     { days },
     { query: { refetchInterval: POLL_MS, placeholderData: keepPreviousData } },
   );
-  const wind = useWind({ hours: WIND_HOURS }, { query: { refetchInterval: POLL_MS } });
+  const wind = useWind(
+    { days: windDays, resolution: windResolution },
+    { query: { refetchInterval: POLL_MS, placeholderData: keepPreviousData } },
+  );
   const runs = useIngestRuns({ limit: RUNS_LIMIT }, { query: { refetchInterval: POLL_MS } });
   const turbine = useTurbine({ query: { refetchInterval: POLL_MS } });
 
@@ -66,7 +77,14 @@ function App() {
       </header>
 
       {booting ? (
-        <DashboardSkeleton days={days} onRangeChange={setDays} />
+        <DashboardSkeleton
+          days={days}
+          onRangeChange={setDays}
+          windDays={windDays}
+          windResolution={windResolution}
+          onWindRangeChange={setWindDays}
+          onWindResolutionChange={setWindResolution}
+        />
       ) : (
         <div className="dashboard">
           <section>
@@ -79,7 +97,15 @@ function App() {
           </section>
 
           <section className="panel">
-            <PanelState query={wind}>{(wind) => <WindPanel wind={wind} />}</PanelState>
+            <WindHead
+              days={windDays}
+              resolution={windResolution}
+              onRangeChange={setWindDays}
+              onResolutionChange={setWindResolution}
+            />
+            <PanelState query={wind}>
+              {(wind) => <WindPanel key={`${wind.days}-${wind.resolution}`} wind={wind} />}
+            </PanelState>
           </section>
 
           <section className="panel">
@@ -148,15 +174,67 @@ function DailyHead({
   );
 }
 
+function WindHead({
+  days,
+  resolution,
+  onRangeChange,
+  onResolutionChange,
+}: {
+  days: number;
+  resolution: WindResolution;
+  onRangeChange: (days: number) => void;
+  onResolutionChange: (resolution: WindResolution) => void;
+}) {
+  return (
+    <div className="panel-head">
+      <h2>Wind</h2>
+      <div className="switch-row">
+        <div className="range-switch">
+          {WIND_RANGES.map((range) => (
+            <button
+              key={range}
+              className={range === days ? "active" : ""}
+              aria-pressed={range === days}
+              onClick={() => onRangeChange(range)}
+            >
+              {range} d
+            </button>
+          ))}
+        </div>
+        <div className="range-switch">
+          {WIND_RESOLUTIONS.map((r) => (
+            <button
+              key={r.value}
+              className={r.value === resolution ? "active" : ""}
+              aria-pressed={r.value === resolution}
+              onClick={() => onResolutionChange(r.value)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** First-load skeleton — reuses the dashboard's real layout containers so the
  * single fade-in to the loaded page happens at identical heights. Inert:
  * purely visual, nothing to interact with for a split second. */
 function DashboardSkeleton({
   days,
   onRangeChange,
+  windDays,
+  windResolution,
+  onWindRangeChange,
+  onWindResolutionChange,
 }: {
   days: number;
   onRangeChange: (days: number) => void;
+  windDays: number;
+  windResolution: WindResolution;
+  onWindRangeChange: (days: number) => void;
+  onWindResolutionChange: (resolution: WindResolution) => void;
 }) {
   return (
     <div inert>
@@ -177,16 +255,16 @@ function DashboardSkeleton({
       </section>
 
       <section className="panel">
-        <div className="charts-row">
-          <div>
-            <h3 className="chart-title">Windrose</h3>
-            <div className="chart chart-rose skel" />
-            <p className="chart-note">0° N · 90° E · 180° S · 270° W (im Uhrzeigersinn)</p>
-          </div>
-          <div>
-            <h3 className="chart-title">Windgeschwindigkeit</h3>
-            <div className="chart skel" />
-          </div>
+        <WindHead
+          days={windDays}
+          resolution={windResolution}
+          onRangeChange={onWindRangeChange}
+          onResolutionChange={onWindResolutionChange}
+        />
+        <div className="chart chart-rose skel" />
+        <div className="chart chart-speed skel" />
+        <div className="brush-row">
+          <div className="brush-strip skel" style={{ height: 40 }} />
         </div>
       </section>
 

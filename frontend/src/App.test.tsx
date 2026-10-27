@@ -1,6 +1,6 @@
 /** App-level integration: skeleton gate + progress bar during boot, then the
  * real dashboard; per-panel refresh dimming. */
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ import App from "./App";
 import { metrics, showTab, stubDashboardFetch } from "./test/helpers";
 
 let responses: ReturnType<typeof stubDashboardFetch>["responses"];
+let fetchMock: ReturnType<typeof stubDashboardFetch>["fetchMock"];
 
 function renderApp() {
   const queryClient = new QueryClient({
@@ -23,7 +24,7 @@ function renderApp() {
 beforeEach(() => {
   vi.useFakeTimers();
   showTab();
-  ({ responses } = stubDashboardFetch());
+  ({ responses, fetchMock } = stubDashboardFetch());
 });
 
 afterEach(() => {
@@ -80,5 +81,34 @@ describe("App", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(container.querySelector(".data.refreshing")).toBeNull();
+  });
+
+  it("refetches the wind series when range or resolution changes", async () => {
+    renderApp();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/wind?days=2&resolution=hour",
+      expect.anything(),
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "7 d" }).click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/wind?days=7&resolution=hour",
+      expect.anything(),
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Täglich" }).click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/wind?days=7&resolution=day",
+      expect.anything(),
+    );
   });
 });

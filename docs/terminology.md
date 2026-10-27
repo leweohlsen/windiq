@@ -103,12 +103,18 @@ translated in data**, only in labels:
 | DailyChart | Mean wind (m/s) | Mittlere Windgeschwindigkeit (m/s) |
 | DailyChart | Energy: / Mean wind: / max | Energie: / Mittlerer Wind: / max |
 | DailyChart | Ok hours: 21/24 | Verwertbare Stunden: 21/24 |
-| DailyChart | QC: 2 suspect · 1 no-data | QC: 2 verdächtig · 1 ohne Wert |
 | WindPanel | Wind rose — … ok hours · trailing 30 days | Windrose — … verwertbare Stunden · letzte 30 Tage |
-| WindPanel | Wind speed — last 48 h (mast height) | Windgeschwindigkeit — letzte 48 h (Messhöhe) |
-| WindPanel | Wind speed (m/s) (legend/tooltip) | Windgeschwindigkeit (m/s) |
+| WindPanel | Wind speed — last 48 h (mast height) | Windgeschwindigkeit — letzte {days} Tage, {stündlich\|täglich\|wöchentlich} (Messhöhe) |
+| WindPanel | Range switch (2/7/30/90/365 d) | Bereichsschalter (2/7/30/90/365 Tage) |
+| WindPanel | Resolution switch | Auflösungsschalter (Stündlich / Täglich / Wöchentlich) |
+| WindPanel | Mean wind (m/s) (legend) | Mittel (m/s) |
+| WindPanel | QC bars (legend) | Verdächtig / Ohne Wert / Fehlerhaft |
+| WindPanel | Mittel: x m/s · Min / Max (Originalwerte): y / z m/s | Mittel: x m/s · Min / Max (Originalwerte): y / z m/s |
+| WindPanel | QC: a verdächtig · b ohne Wert · c fehlerhaft | QC: a verdächtig · b ohne Wert · c fehlerhaft |
 | WindPanel | Ok hours: / Mean speed: | Verwertbare Stunden: / Mittlere Geschwindigkeit: |
 | WindPanel | (clockwise) | (im Uhrzeigersinn) |
+| WindPanel | Brush strip (drag to zoom) | Auswahlstreifen (ziehen zum Zoomen) |
+| WindPanel | Reset zoom | Zoom zurücksetzen |
 | DataStatus | Last ingest run | Letzter Ingest-Lauf |
 | DataStatus | Finished at: … · duration … | Abgeschlossen: … · Dauer … |
 | DataStatus | Pages 3 · 100 inserted · 5 updated | Seiten 3 · 100 neu · 5 geändert |

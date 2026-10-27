@@ -36,6 +36,21 @@ export const asDateRange = (from: string | null, to: string | null) =>
 export const asClock = (iso: string | null) =>
   iso == null ? "–" : new Date(iso).toLocaleString("de-DE");
 
+/** Wind bucket timestamp → de-DE label: datetime for hourly, date for
+ * day/week. Buckets are UTC; timeZone: "UTC" keeps the wall time stable
+ * regardless of the browser's local zone. */
+export const asBucket = (iso: string, resolution: "hour" | "day" | "week") =>
+  resolution === "hour"
+    ? new Date(iso).toLocaleString("de-DE", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: "UTC",
+      })
+    : new Date(iso).toLocaleDateString("de-DE", { timeZone: "UTC" });
+
 /** Duration between two run timestamps → "4,2 s" / "2 Min. 10 s" / "1 h 5 Min.". */
 export const asDuration = (from: string | null, to: string | null) => {
   if (from == null || to == null) return "–";

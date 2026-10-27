@@ -142,18 +142,27 @@ async def test_turbine_endpoint_none_without_turbine(db, clean):
 async def test_wind_endpoint_series_and_rose(db, clean, reference, measurement_row, hour):
     await repo.upsert_measurements(db, [
         measurement_row(hour, 5.0, wind_dir=10),
-        measurement_row(hour + HOUR, 6.0, wind_dir=200),
-        measurement_row(hour + 2 * HOUR, None, quality="missing"),  # not in series
+        measurement_row(hour - HOUR, 6.0, wind_dir=200),
+        measurement_row(hour - 2 * HOUR, None, quality="missing"),
     ])
     await db.commit()
     payload = await api_mod.wind(2)
-    assert payload["hours"] == 2
-    assert [p["wind_speed_ms"] for p in payload["series"]] == [5.0, 6.0]
-    assert [p["wind_dir_deg"] for p in payload["series"]] == [10, 200]
+    assert payload["days"] == 2
+    assert payload["resolution"] == "hour"
+    assert len(payload["series"]) == 49      # every hour of the 2-day window
+    by_ts = {p["timestamp"]: p for p in payload["series"]}
+    assert by_ts[hour]["ok_hours"] == 1
+    assert by_ts[hour - HOUR]["ok_hours"] == 1
+    assert by_ts[hour - 2 * HOUR]["missing_hours"] == 1
+    assert by_ts[hour - 3 * HOUR]["ok_hours"] == 0    # absent hour → empty bucket
     assert len(payload["rose"]) == 16               # all sectors, never filtered
     north = next(s for s in payload["rose"] if s["direction"] == "N")
     assert north["frequency"] == 1
     assert north["mean_speed_ms"] == pytest.approx(5.0)
+
+    # days is clamped to [1, 365]
+    assert (await api_mod.wind(0))["days"] == 1
+    assert (await api_mod.wind(9999))["days"] == 365
 
 
 async def test_runs_endpoint_newest_first_and_limit_cap(db, clean, hour):

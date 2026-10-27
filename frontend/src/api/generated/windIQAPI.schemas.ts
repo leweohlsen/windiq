@@ -129,14 +129,29 @@ export interface TurbineDetailOut {
   power_curve: PowerCurvePointOut[];
 }
 
+export type WindOutResolution = typeof WindOutResolution[keyof typeof WindOutResolution];
+
+
+export const WindOutResolution = {
+  hour: 'hour',
+  day: 'day',
+  week: 'week',
+} as const;
+
 export interface WindPointOut {
   timestamp: string;
-  wind_speed_ms: number;
-  wind_dir_deg: number;
+  mean_wind_ms: number | null;
+  min_wind_ms: number | null;
+  max_wind_ms: number | null;
+  ok_hours: number;
+  suspect_hours: number;
+  missing_hours: number;
+  malformed_hours: number;
 }
 
 export interface WindOut {
-  hours: number;
+  days: number;
+  resolution: WindOutResolution;
   series: WindPointOut[];
   rose: RoseSectorOut[];
 }
@@ -146,8 +161,18 @@ days?: number;
 };
 
 export type WindParams = {
-hours?: number;
+days?: number;
+resolution?: WindResolution;
 };
+
+export type WindResolution = typeof WindResolution[keyof typeof WindResolution];
+
+
+export const WindResolution = {
+  hour: 'hour',
+  day: 'day',
+  week: 'week',
+} as const;
 
 export type IngestRunsParams = {
 limit?: number;

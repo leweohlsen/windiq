@@ -30,7 +30,24 @@ export function stubDashboardFetch() {
   const responses: Record<string, unknown> = {
     "/api/metrics": metrics,
     "/api/daily?days=90": [{ day: "2026-10-25", energy_kwh: 1 }],
-    "/api/wind?hours=48": { hours: 48, series: [], rose: [] },
+    "/api/wind?days=2&resolution=hour": {
+      days: 2,
+      resolution: "hour",
+      series: makeWindSeries(48),
+      rose: [],
+    },
+    "/api/wind?days=7&resolution=hour": {
+      days: 7,
+      resolution: "hour",
+      series: makeWindSeries(168),
+      rose: [],
+    },
+    "/api/wind?days=7&resolution=day": {
+      days: 7,
+      resolution: "day",
+      series: makeWindSeries(7),
+      rose: [],
+    },
     "/api/ingest/runs?limit=10": [],
     "/api/turbine": turbine,
   };
@@ -52,6 +69,27 @@ export function stubDashboardFetch() {
 /** Tests run with the tab visible so background polls fire. */
 export function showTab() {
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
+}
+
+/** Generate a synthetic hourly wind series for tests. Timestamps are UTC
+ * hours ending at the current hour; mean wind oscillates 3–12 m/s. */
+function makeWindSeries(count: number) {
+  const now = new Date();
+  now.setUTCMinutes(0, 0, 0);
+  return Array.from({ length: count }, (_, i) => {
+    const ts = new Date(now.getTime() - (count - 1 - i) * 3600_000).toISOString();
+    const mean = 7.5 + Math.sin(i / 6) * 4;
+    return {
+      timestamp: ts,
+      mean_wind_ms: mean,
+      min_wind_ms: mean - 1,
+      max_wind_ms: mean + 1,
+      ok_hours: 1,
+      suspect_hours: 0,
+      missing_hours: 0,
+      malformed_hours: 0,
+    };
+  });
 }
 
 export { metrics, turbine };

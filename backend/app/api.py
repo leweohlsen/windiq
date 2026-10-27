@@ -22,7 +22,7 @@ router = APIRouter()
 log = logging.getLogger(__name__)
 
 DAYS_CAP = 365
-WIND_HOURS_CAP = 168
+WIND_DAYS_CAP = 365
 RUNS_LIMIT_CAP = 50
 
 
@@ -151,8 +151,13 @@ class DailyPointOut(BaseModel):
 
 class WindPointOut(BaseModel):
     timestamp: datetime
-    wind_speed_ms: float
-    wind_dir_deg: int
+    mean_wind_ms: float | None
+    min_wind_ms: float | None
+    max_wind_ms: float | None
+    ok_hours: int
+    suspect_hours: int
+    missing_hours: int
+    malformed_hours: int
 
 
 class RoseSectorOut(BaseModel):
@@ -163,7 +168,8 @@ class RoseSectorOut(BaseModel):
 
 
 class WindOut(BaseModel):
-    hours: int
+    days: int
+    resolution: Literal["hour", "day", "week"]
     series: list[WindPointOut]
     rose: list[RoseSectorOut]
 
@@ -269,13 +275,15 @@ async def daily(days: int = 90) -> list[DailyPointOut]:
 
 
 @router.get("/api/wind", operation_id="wind")
-async def wind(hours: int = 48) -> WindOut:
-    """Hourly speed+direction series and the 30-day 16-sector wind rose."""
-    capped = min(max(hours, 1), WIND_HOURS_CAP)
+async def wind(
+    days: int = 2, resolution: Literal["hour", "day", "week"] = "hour"
+) -> WindOut:
+    """Per-bucket speed stats + QC counts and the 30-day 16-sector wind rose."""
+    capped = min(max(days, 1), WIND_DAYS_CAP)
     async with SessionLocal() as s:
-        series = await repo.wind_series(s, hours=capped)
+        series = await repo.wind_series(s, days=capped, resolution=resolution)
         rose = await repo.wind_rose(s)
-    return {"hours": capped, "series": series, "rose": rose}
+    return {"days": capped, "resolution": resolution, "series": series, "rose": rose}
 
 
 @router.get("/api/ingest/runs", operation_id="ingest_runs")

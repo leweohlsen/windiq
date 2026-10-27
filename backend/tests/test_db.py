@@ -199,15 +199,65 @@ async def test_coverage_ignores_rows_older_than_twelve_months(
 async def test_wind_series_trailing_window(db, clean, reference, measurement_row, hour):
     t0 = hour
     await repo.upsert_measurements(db, [
-        measurement_row(t0, 5.0, wind_dir=0),
-        measurement_row(t0 + HOUR_LATER, 7.0, wind_dir=100),
-        measurement_row(t0 + 2 * HOUR_LATER, None, quality="missing"),  # excluded
-        measurement_row(t0 + 3 * HOUR_LATER, 9.0, wind_dir=200),
+        measurement_row(t0 - 3 * HOUR_LATER, 5.0),
+        measurement_row(t0 - 2 * HOUR_LATER, 83.0, quality="suspect"),
+        measurement_row(t0 - HOUR_LATER, None, quality="missing"),
+        # t0 itself gets no row: the absent hour must surface as an empty bucket
     ])
-    series = await repo.wind_series(db, hours=2)
-    assert [(p["wind_speed_ms"], p["wind_dir_deg"]) for p in series] == \
-        [(7.0, 100), (9.0, 200)]
-    assert series[0]["timestamp"] < series[1]["timestamp"]   # oldest first
+    series = await repo.wind_series(db, days=1)
+    assert [p["timestamp"] for p in series] == \
+        sorted(p["timestamp"] for p in series)      # oldest first
+    assert len(series) == 25    # every hour of [trunc(now) - 1 d, trunc(now)]
+
+    by_ts = {p["timestamp"]: p for p in series}
+    empty = by_ts[t0]
+    assert empty["mean_wind_ms"] is None
+    assert empty["min_wind_ms"] is None
+    assert empty["max_wind_ms"] is None
+    assert (empty["ok_hours"], empty["suspect_hours"],
+            empty["missing_hours"], empty["malformed_hours"]) == (0, 0, 0, 0)
+
+    ok = by_ts[t0 - 3 * HOUR_LATER]
+    assert ok["mean_wind_ms"] == pytest.approx(5.0)
+    assert ok["ok_hours"] == 1
+
+    suspect = by_ts[t0 - 2 * HOUR_LATER]
+    assert suspect["max_wind_ms"] == pytest.approx(83.0)   # suspect value is a value
+    assert (suspect["ok_hours"], suspect["suspect_hours"]) == (0, 1)
+
+    missing = by_ts[t0 - HOUR_LATER]
+    assert missing["mean_wind_ms"] is None
+    assert missing["missing_hours"] == 1
+
+
+async def test_wind_series_day_and_week_buckets(db, clean, reference, measurement_row, hour):
+    # 12:00 anchor — the four hours stay on one UTC day (see sibling tests)
+    t0 = hour.replace(hour=12)
+    monday = (t0 - timedelta(days=t0.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    await repo.upsert_measurements(db, [
+        measurement_row(t0 - 3 * HOUR_LATER, 5.0),
+        measurement_row(t0 - 2 * HOUR_LATER, 83.0, quality="suspect"),
+        measurement_row(t0 - HOUR_LATER, -1.0, quality="suspect"),
+        measurement_row(t0, None, quality="missing"),
+        measurement_row(monday - timedelta(days=3), 3.0),   # previous ISO week
+    ])
+
+    daily = await repo.wind_series(db, days=2, resolution="day")
+    day = next(p for p in daily if p["timestamp"].date() == t0.date())
+    assert day["mean_wind_ms"] == pytest.approx((5.0 + 83.0 - 1.0) / 3)
+    assert day["min_wind_ms"] == pytest.approx(-1.0)   # original values feed min/max
+    assert day["max_wind_ms"] == pytest.approx(83.0)
+    assert (day["ok_hours"], day["suspect_hours"], day["missing_hours"]) == (1, 2, 1)
+
+    weekly = await repo.wind_series(db, days=14, resolution="week")
+    by_ts = {p["timestamp"]: p for p in weekly}
+    this_week = by_ts[monday]
+    assert (this_week["ok_hours"], this_week["suspect_hours"],
+            this_week["missing_hours"]) == (1, 2, 1)
+    last_week = by_ts[monday - timedelta(days=7)]
+    assert last_week["mean_wind_ms"] == pytest.approx(3.0)
+    assert last_week["ok_hours"] == 1
 
 
 async def test_wind_rose_matches_hand_computed_sectors(

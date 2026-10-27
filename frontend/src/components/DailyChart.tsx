@@ -1,7 +1,7 @@
-/** Daily chart — ComposedChart: bars = daily energy (MWh) with per-bar QC
- * coloring via Cell (clean → accent, suspect hours → amber, no ok hours →
- * gap), line = mean wind (m/s) on the second y-axis; tooltip shows ok hours +
- * QC counts. Title and range switcher live in App's panel head. */
+/** Daily chart — ComposedChart: bars = daily energy (MWh) with per-bar coloring
+ * via Cell (clean → accent, no ok hours → gap), line = mean wind (m/s) on the
+ * second y-axis; tooltip shows ok hours. Title and range switcher live in
+ * App's panel head. QC tracking moved to the wind panel (plan 2026-10-27). */
 import { memo } from "react";
 import {
   Bar,
@@ -21,14 +21,10 @@ import { useAnimateOnce } from "../useAnimateOnce";
 import { asHours, asMs, asMWh } from "../format";
 
 const CLEAN = "#3b82f6";
-const SUSPECT = "#f59e0b";
 const GAP = "#e5e7eb";
 
-const barColor = (point: DailyPoint): string => {
-  if (point.energy_kwh == null) return GAP;
-  if (point.suspect_hours > 0) return SUSPECT;
-  return CLEAN;
-};
+const barColor = (point: DailyPoint): string =>
+  point.energy_kwh == null ? GAP : CLEAN;
 
 /** Memoized: per-panel data references stay stable across unchanged polls,
  * so a metrics-only tick never reconciles the (up to 365-point) chart. */
@@ -96,9 +92,6 @@ function DailyTooltip({
         {point.max_wind_ms != null && ` · max ${asMs(point.max_wind_ms)} m/s`}
       </div>
       <div>Verwertbare Stunden: {asHours(point.hours)}/24</div>
-      <div>
-        QC: {point.suspect_hours} verdächtig · {point.missing_hours} ohne Wert
-      </div>
     </div>
   );
 }

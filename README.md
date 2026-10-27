@@ -25,7 +25,7 @@ WindIQ API ──▶ Worker ──Upsert──▶ PostgreSQL ──SQL-Views─�
    Leistungskennlinie aus und summieren zu Tages- und Jahresenergie. Verdächtige, fehlende und
    fehlerhafte Stunden liefern keinen Ertrag; sie erscheinen als Lücke in der Datenabdeckung.
 4. **Anzeigen.** Das Dashboard zeigt P50 und P90, AEP brutto und netto, Tagesenergie, Windrose,
-   Wind der letzten 48 Stunden, Datenalter und Abdeckung sowie den Ingest-Verlauf.
+   Winddaten mit QC-Übersicht (2–365 Tage, stündlich/täglich/wöchentlich), Datenalter und Abdeckung sowie den Ingest-Verlauf.
 
 ### Berechnung
 
