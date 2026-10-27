@@ -33,7 +33,10 @@ function App() {
   const metrics = useMetrics({ query: { refetchInterval: POLL_MS } });
   // keepPreviousData: a range change re-fetches under a new key but keeps the
   // old chart visible (refreshing dim) instead of flashing the skeleton
-  const daily = useDaily({ days }, { query: { refetchInterval: POLL_MS, placeholderData: keepPreviousData } });
+  const daily = useDaily(
+    { days },
+    { query: { refetchInterval: POLL_MS, placeholderData: keepPreviousData } },
+  );
   const wind = useWind({ hours: WIND_HOURS }, { query: { refetchInterval: POLL_MS } });
   const runs = useIngestRuns({ limit: RUNS_LIMIT }, { query: { refetchInterval: POLL_MS } });
   const turbine = useTurbine({ query: { refetchInterval: POLL_MS } });
@@ -230,7 +233,8 @@ function PanelState<T>({
   query: UseQueryResult<T, unknown>;
   children: (data: T) => ReactNode;
 }) {
-  const error = query.error instanceof Error ? query.error.message : query.error ? "Unbekannter Fehler" : null;
+  const error =
+    query.error instanceof Error ? query.error.message : query.error ? "Unbekannter Fehler" : null;
   if (query.data == null) {
     if (error) {
       return (
