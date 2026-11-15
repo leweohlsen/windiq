@@ -1,5 +1,5 @@
 # Pin uv, Python, and the base image digest for reproducible builds.
-FROM ghcr.io/astral-sh/uv:0.13.5-python3.12-trixie-slim@sha256:9b8477a5f2e2f96fa99eaecb7680c1c4c9f527926430f3b630bfb2c3641f8f20
+FROM ghcr.io/astral-sh/uv:0.13.8-python3.12-trixie-slim@sha256:ee8a8854267a3bd09ac0364420803fb74a069068b5fb279a2cf1df664f7273db
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
